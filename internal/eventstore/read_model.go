@@ -2,7 +2,7 @@ package eventstore
 
 import "time"
 
-//ReadModel is the minimum representation of a read model.
+// ReadModel is the minimum representation of a read model.
 // It implements a basic reducer
 // it might be saved in a database or in memory
 type ReadModel struct {
@@ -13,16 +13,16 @@ type ReadModel struct {
 	Events            []Event   `json:"-"`
 	ResourceOwner     string    `json:"-"`
 	InstanceID        string    `json:"-"`
+	Position          float64   `json:"-"`
 }
 
-//AppendEvents adds all the events to the read model.
+// AppendEvents adds all the events to the read model.
 // The function doesn't compute the new state of the read model
-func (rm *ReadModel) AppendEvents(events ...Event) *ReadModel {
+func (rm *ReadModel) AppendEvents(events ...Event) {
 	rm.Events = append(rm.Events, events...)
-	return rm
 }
 
-//Reduce is the basic implementation of reducer
+// Reduce is the basic implementation of reducer
 // If this function is extended the extending function should be the last step
 func (rm *ReadModel) Reduce() error {
 	if len(rm.Events) == 0 {
@@ -40,12 +40,12 @@ func (rm *ReadModel) Reduce() error {
 	}
 
 	if rm.CreationDate.IsZero() {
-		rm.CreationDate = rm.Events[0].CreationDate()
+		rm.CreationDate = rm.Events[0].CreatedAt()
 	}
-	rm.ChangeDate = rm.Events[len(rm.Events)-1].CreationDate()
+	rm.ChangeDate = rm.Events[len(rm.Events)-1].CreatedAt()
 	rm.ProcessedSequence = rm.Events[len(rm.Events)-1].Sequence()
+	rm.Position = rm.Events[len(rm.Events)-1].Position()
 	// all events processed and not needed anymore
-	rm.Events = nil
-	rm.Events = []Event{}
+	rm.Events = rm.Events[0:0]
 	return nil
 }

@@ -1,5 +1,6 @@
 ---
-title: Deployment
+title: ZITADEL's Deployment Architecture
+sidebar_label: Deployment Architecture
 ---
 
 ## High Availability
@@ -9,8 +10,8 @@ Since the storage layer takes the heavy lifting of making sure that data in sync
 
 Depending on your projects needs our general recommendation is to run ZITADEL and ZITADELs storage layer across multiple availability zones in the same region or if you need higher guarantees run the storage layer across multiple regions.
 Consult the [CockroachDB documentation](https://www.cockroachlabs.com/docs/) for more details or use the [CockroachCloud Service](https://www.cockroachlabs.com/docs/cockroachcloud/create-an-account.html)
-
-> Postgres support of ZITADEL is currently in beta.
+Alternatively you can run ZITADEL also with Postgres which is [Enterprise Supported](/docs/support/software-release-cycles-support#partially-supported).
+Make sure to read our [Production Guide](/self-hosting/manage/production#prefer-postgresql) before you decide to use it.
 
 ## Scalability
 
@@ -72,7 +73,7 @@ The common update involves the following steps and do not need manual interventi
 - As soon as the new version is ready to accept traffic it will signal this on the readiness endpoint `/debug/ready` 
 - At this point your network infrastructure can send traffic to the new version
 
-Users who use [Kubernetes/Helm](../../guides/deploy/kubernetes) or serverless container services like Google Cloud Run can benefit from the fact the above process is automated.
+Users who use [Kubernetes/Helm](/docs/self-hosting/deploy/kubernetes) or serverless container services like Google Cloud Run can benefit from the fact the above process is automated.
 
 :::info
 As a good practice we recommend creating Database Backups prior to an update.

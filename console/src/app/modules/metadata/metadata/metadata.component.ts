@@ -13,6 +13,7 @@ export class MetadataComponent implements OnChanges {
   @Input() public metadata: Metadata.AsObject[] = [];
   @Input() public disabled: boolean = false;
   @Input() public loading: boolean = false;
+  @Input({ required: true }) public description!: string;
   @Output() public editClicked: EventEmitter<void> = new EventEmitter();
   @Output() public refresh: EventEmitter<void> = new EventEmitter();
 
@@ -27,8 +28,8 @@ export class MetadataComponent implements OnChanges {
   constructor() {}
 
   ngOnChanges(changes: SimpleChanges): void {
-    if (changes.metadata?.currentValue) {
-      this.dataSource = new MatTableDataSource<Metadata.AsObject>(changes.metadata.currentValue);
+    if (changes['metadata']?.currentValue) {
+      this.dataSource = new MatTableDataSource<Metadata.AsObject>(changes['metadata'].currentValue);
     }
   }
 }

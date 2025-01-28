@@ -1,12 +1,10 @@
 package command
 
 import (
-	"strings"
-
-	"github.com/zitadel/zitadel/internal/eventstore"
+	"context"
 
 	"github.com/zitadel/zitadel/internal/domain"
-	caos_errors "github.com/zitadel/zitadel/internal/errors"
+	"github.com/zitadel/zitadel/internal/eventstore"
 	"github.com/zitadel/zitadel/internal/repository/user"
 )
 
@@ -99,6 +97,7 @@ func (wm *UserWriteModel) Query() *eventstore.SearchQueryBuilder {
 		EventTypes(
 			user.HumanAddedType,
 			user.HumanRegisteredType,
+			user.HumanInitialCodeAddedType,
 			user.HumanInitializedCheckSucceededType,
 			user.UserIDPLinkAddedType,
 			user.UserIDPLinkRemovedType,
@@ -126,14 +125,8 @@ func UserAggregateFromWriteModel(wm *eventstore.WriteModel) *eventstore.Aggregat
 	return eventstore.AggregateFromWriteModel(wm, user.AggregateType, user.AggregateVersion)
 }
 
-func CheckDomainPolicyForUserName(userName string, policy *domain.DomainPolicy) error {
-	if policy == nil {
-		return caos_errors.ThrowPreconditionFailed(nil, "COMMAND-3Mb9s", "Errors.Users.DomainPolicyNil")
-	}
-	if policy.UserLoginMustBeDomain && strings.Contains(userName, "@") {
-		return caos_errors.ThrowPreconditionFailed(nil, "COMMAND-2k9fD", "Errors.User.EmailAsUsernameNotAllowed")
-	}
-	return nil
+func UserAggregateFromWriteModelCtx(ctx context.Context, wm *eventstore.WriteModel) *eventstore.Aggregate {
+	return eventstore.AggregateFromWriteModelCtx(ctx, wm, user.AggregateType, user.AggregateVersion)
 }
 
 func isUserStateExists(state domain.UserState) bool {
@@ -142,6 +135,10 @@ func isUserStateExists(state domain.UserState) bool {
 
 func isUserStateInactive(state domain.UserState) bool {
 	return hasUserState(state, domain.UserStateInactive)
+}
+
+func isUserStateActive(state domain.UserState) bool {
+	return hasUserState(state, domain.UserStateActive)
 }
 
 func isUserStateInitial(state domain.UserState) bool {

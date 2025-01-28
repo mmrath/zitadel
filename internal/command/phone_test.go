@@ -3,12 +3,13 @@ package command
 import (
 	"testing"
 
-	"github.com/zitadel/zitadel/internal/errors"
+	"github.com/zitadel/zitadel/internal/domain"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 func TestFormatPhoneNumber(t *testing.T) {
 	type args struct {
-		number string
+		number domain.PhoneNumber
 	}
 	tests := []struct {
 		name    string
@@ -21,7 +22,7 @@ func TestFormatPhoneNumber(t *testing.T) {
 			args: args{
 				number: "PhoneNumber",
 			},
-			errFunc: errors.IsErrorInvalidArgument,
+			errFunc: zerrors.IsErrorInvalidArgument,
 		},
 		{
 			name: "format phone +4171 xxx xx xx",
@@ -44,10 +45,9 @@ func TestFormatPhoneNumber(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			formatted, err := FormatPhoneNumber(tt.args.number)
-
-			if tt.errFunc == nil && tt.result.Number != formatted {
-				t.Errorf("got wrong result: expected: %v, actual: %v ", tt.args.number, formatted)
+			normalized, err := tt.args.number.Normalize()
+			if tt.errFunc == nil && tt.result.Number != normalized {
+				t.Errorf("got wrong result: expected: %v, actual: %v ", tt.result.Number, normalized)
 			}
 			if tt.errFunc != nil && !tt.errFunc(err) {
 				t.Errorf("got wrong err: %v ", err)

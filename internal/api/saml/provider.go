@@ -1,8 +1,6 @@
 package saml
 
 import (
-	"context"
-	"database/sql"
 	"fmt"
 	"net/http"
 
@@ -14,6 +12,7 @@ import (
 	"github.com/zitadel/zitadel/internal/auth/repository"
 	"github.com/zitadel/zitadel/internal/command"
 	"github.com/zitadel/zitadel/internal/crypto"
+	"github.com/zitadel/zitadel/internal/database"
 	"github.com/zitadel/zitadel/internal/eventstore"
 	"github.com/zitadel/zitadel/internal/eventstore/handler/crdb"
 	"github.com/zitadel/zitadel/internal/query"
@@ -25,11 +24,16 @@ const (
 )
 
 type Config struct {
-	ProviderConfig *provider.Config
+	ProviderConfig    *provider.Config
+	DefaultLoginURLV2 string
+}
+
+type Provider struct {
+	*provider.Provider
+	command *command.Commands
 }
 
 func NewProvider(
-	ctx context.Context,
 	conf Config,
 	externalSecure bool,
 	command *command.Commands,
@@ -38,10 +42,11 @@ func NewProvider(
 	encAlg crypto.EncryptionAlgorithm,
 	certEncAlg crypto.EncryptionAlgorithm,
 	es *eventstore.Eventstore,
-	projections *sql.DB,
+	projections *database.DB,
 	instanceHandler,
 	userAgentCookie func(http.Handler) http.Handler,
-) (*provider.Provider, error) {
+	accessHandler *middleware.AccessInterceptor,
+) (*Provider, error) {
 	metricTypes := []metrics.MetricType{metrics.MetricTypeRequestCount, metrics.MetricTypeStatusCode, metrics.MetricTypeTotalCount}
 
 	provStorage, err := newStorage(
@@ -52,6 +57,8 @@ func NewProvider(
 		certEncAlg,
 		es,
 		projections,
+		fmt.Sprintf("%s%s?%s=", login.HandlerPrefix, login.EndpointLogin, login.QueryAuthRequestID),
+		conf.DefaultLoginURLV2,
 	)
 	if err != nil {
 		return nil, err
@@ -64,20 +71,29 @@ func NewProvider(
 			middleware.NoCacheInterceptor().Handler,
 			instanceHandler,
 			userAgentCookie,
+			accessHandler.HandleWithPublicAuthPathPrefixes(publicAuthPathPrefixes(conf.ProviderConfig)),
 			http_utils.CopyHeadersToContext,
+			middleware.ActivityHandler,
 		),
+		provider.WithCustomTimeFormat("2006-01-02T15:04:05.999Z"),
 	}
 	if !externalSecure {
 		options = append(options, provider.WithAllowInsecure())
 	}
 
-	return provider.NewProvider(
-		ctx,
+	p, err := provider.NewProvider(
 		provStorage,
 		HandlerPrefix,
 		conf.ProviderConfig,
 		options...,
 	)
+	if err != nil {
+		return nil, err
+	}
+	return &Provider{
+		p,
+		command,
+	}, nil
 }
 
 func newStorage(
@@ -87,16 +103,38 @@ func newStorage(
 	encAlg crypto.EncryptionAlgorithm,
 	certEncAlg crypto.EncryptionAlgorithm,
 	es *eventstore.Eventstore,
-	projections *sql.DB,
+	db *database.DB,
+	defaultLoginURL string,
+	defaultLoginURLV2 string,
 ) (*Storage, error) {
 	return &Storage{
-		encAlg:          encAlg,
-		certEncAlg:      certEncAlg,
-		locker:          crdb.NewLocker(projections, locksTable, signingKey),
-		eventstore:      es,
-		repo:            repo,
-		command:         command,
-		query:           query,
-		defaultLoginURL: fmt.Sprintf("%s%s?%s=", login.HandlerPrefix, login.EndpointLogin, login.QueryAuthRequestID),
+		encAlg:            encAlg,
+		certEncAlg:        certEncAlg,
+		locker:            crdb.NewLocker(db.DB, locksTable, signingKey),
+		eventstore:        es,
+		repo:              repo,
+		command:           command,
+		query:             query,
+		defaultLoginURL:   defaultLoginURL,
+		defaultLoginURLv2: defaultLoginURLV2,
 	}, nil
+}
+
+func publicAuthPathPrefixes(config *provider.Config) []string {
+	metadataEndpoint := HandlerPrefix + provider.DefaultMetadataEndpoint
+	certificateEndpoint := HandlerPrefix + provider.DefaultCertificateEndpoint
+	ssoEndpoint := HandlerPrefix + provider.DefaultSingleSignOnEndpoint
+	if config.MetadataConfig != nil && config.MetadataConfig.Path != "" {
+		metadataEndpoint = HandlerPrefix + config.MetadataConfig.Path
+	}
+	if config.IDPConfig == nil || config.IDPConfig.Endpoints == nil {
+		return []string{metadataEndpoint, certificateEndpoint, ssoEndpoint}
+	}
+	if config.IDPConfig.Endpoints.Certificate != nil && config.IDPConfig.Endpoints.Certificate.Relative() != "" {
+		certificateEndpoint = HandlerPrefix + config.IDPConfig.Endpoints.Certificate.Relative()
+	}
+	if config.IDPConfig.Endpoints.SingleSignOn != nil && config.IDPConfig.Endpoints.SingleSignOn.Relative() != "" {
+		ssoEndpoint = HandlerPrefix + config.IDPConfig.Endpoints.SingleSignOn.Relative()
+	}
+	return []string{metadataEndpoint, certificateEndpoint, ssoEndpoint}
 }

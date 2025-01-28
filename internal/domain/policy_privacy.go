@@ -10,7 +10,11 @@ type PrivacyPolicy struct {
 	State   PolicyState
 	Default bool
 
-	TOSLink     string
-	PrivacyLink string
-	HelpLink    string
+	TOSLink        string
+	PrivacyLink    string
+	HelpLink       string
+	SupportEmail   EmailAddress
+	DocsLink       string
+	CustomLink     string
+	CustomLinkText string
 }

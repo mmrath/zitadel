@@ -1,18 +1,69 @@
 package query
 
 import (
+	"context"
 	"crypto/rsa"
 	"database/sql"
 	"database/sql/driver"
 	"errors"
 	"fmt"
+	"io"
 	"math/big"
 	"regexp"
 	"testing"
+	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
+
+	"github.com/zitadel/zitadel/internal/api/authz"
 	"github.com/zitadel/zitadel/internal/crypto"
-	"github.com/zitadel/zitadel/internal/domain"
-	errs "github.com/zitadel/zitadel/internal/errors"
+	"github.com/zitadel/zitadel/internal/eventstore"
+	key_repo "github.com/zitadel/zitadel/internal/repository/keypair"
+	"github.com/zitadel/zitadel/internal/zerrors"
+)
+
+var (
+	preparePublicKeysStmt = `SELECT projections.keys4.id,` +
+		` projections.keys4.creation_date,` +
+		` projections.keys4.change_date,` +
+		` projections.keys4.sequence,` +
+		` projections.keys4.resource_owner,` +
+		` projections.keys4.algorithm,` +
+		` projections.keys4.use,` +
+		` projections.keys4_public.expiry,` +
+		` projections.keys4_public.key,` +
+		` COUNT(*) OVER ()` +
+		` FROM projections.keys4` +
+		` LEFT JOIN projections.keys4_public ON projections.keys4.id = projections.keys4_public.id AND projections.keys4.instance_id = projections.keys4_public.instance_id` +
+		` AS OF SYSTEM TIME '-1 ms' `
+	preparePublicKeysCols = []string{
+		"id",
+		"creation_date",
+		"change_date",
+		"sequence",
+		"resource_owner",
+		"algorithm",
+		"use",
+		"expiry",
+		"key",
+		"count",
+	}
+
+	preparePrivateKeysStmt = `SELECT projections.keys4.id,` +
+		` projections.keys4.creation_date,` +
+		` projections.keys4.change_date,` +
+		` projections.keys4.sequence,` +
+		` projections.keys4.resource_owner,` +
+		` projections.keys4.algorithm,` +
+		` projections.keys4.use,` +
+		` projections.keys4_private.expiry,` +
+		` projections.keys4_private.key,` +
+		` COUNT(*) OVER ()` +
+		` FROM projections.keys4` +
+		` LEFT JOIN projections.keys4_private ON projections.keys4.id = projections.keys4_private.id AND projections.keys4.instance_id = projections.keys4_private.instance_id` +
+		` AS OF SYSTEM TIME '-1 ms' `
 )
 
 func Test_KeyPrepares(t *testing.T) {
@@ -31,23 +82,12 @@ func Test_KeyPrepares(t *testing.T) {
 			prepare: preparePublicKeysQuery,
 			want: want{
 				sqlExpectations: mockQueries(
-					regexp.QuoteMeta(`SELECT projections.keys3.id,`+
-						` projections.keys3.creation_date,`+
-						` projections.keys3.change_date,`+
-						` projections.keys3.sequence,`+
-						` projections.keys3.resource_owner,`+
-						` projections.keys3.algorithm,`+
-						` projections.keys3.use,`+
-						` projections.keys3_public.expiry,`+
-						` projections.keys3_public.key,`+
-						` COUNT(*) OVER ()`+
-						` FROM projections.keys3`+
-						` LEFT JOIN projections.keys3_public ON projections.keys3.id = projections.keys3_public.id`),
+					regexp.QuoteMeta(preparePublicKeysStmt),
 					nil,
 					nil,
 				),
 				err: func(err error) (error, bool) {
-					if !errs.IsNotFound(err) {
+					if !zerrors.IsNotFound(err) {
 						return fmt.Errorf("err should be zitadel.NotFoundError got: %w", err), false
 					}
 					return nil, true
@@ -60,30 +100,8 @@ func Test_KeyPrepares(t *testing.T) {
 			prepare: preparePublicKeysQuery,
 			want: want{
 				sqlExpectations: mockQueries(
-					regexp.QuoteMeta(`SELECT projections.keys3.id,`+
-						` projections.keys3.creation_date,`+
-						` projections.keys3.change_date,`+
-						` projections.keys3.sequence,`+
-						` projections.keys3.resource_owner,`+
-						` projections.keys3.algorithm,`+
-						` projections.keys3.use,`+
-						` projections.keys3_public.expiry,`+
-						` projections.keys3_public.key,`+
-						` COUNT(*) OVER ()`+
-						` FROM projections.keys3`+
-						` LEFT JOIN projections.keys3_public ON projections.keys3.id = projections.keys3_public.id`),
-					[]string{
-						"id",
-						"creation_date",
-						"change_date",
-						"sequence",
-						"resource_owner",
-						"algorithm",
-						"use",
-						"expiry",
-						"key",
-						"count",
-					},
+					regexp.QuoteMeta(preparePublicKeysStmt),
+					preparePublicKeysCols,
 					[][]driver.Value{
 						{
 							"key-id",
@@ -112,7 +130,7 @@ func Test_KeyPrepares(t *testing.T) {
 							sequence:      20211109,
 							resourceOwner: "ro",
 							algorithm:     "RS256",
-							use:           domain.KeyUsageSigning,
+							use:           crypto.KeyUsageSigning,
 						},
 						expiry: testNow,
 						publicKey: &rsa.PublicKey{
@@ -128,18 +146,7 @@ func Test_KeyPrepares(t *testing.T) {
 			prepare: preparePublicKeysQuery,
 			want: want{
 				sqlExpectations: mockQueryErr(
-					regexp.QuoteMeta(`SELECT projections.keys3.id,`+
-						` projections.keys3.creation_date,`+
-						` projections.keys3.change_date,`+
-						` projections.keys3.sequence,`+
-						` projections.keys3.resource_owner,`+
-						` projections.keys3.algorithm,`+
-						` projections.keys3.use,`+
-						` projections.keys3_public.expiry,`+
-						` projections.keys3_public.key,`+
-						` COUNT(*) OVER ()`+
-						` FROM projections.keys3`+
-						` LEFT JOIN projections.keys3_public ON projections.keys3.id = projections.keys3_public.id`),
+					regexp.QuoteMeta(preparePublicKeysStmt),
 					sql.ErrConnDone,
 				),
 				err: func(err error) (error, bool) {
@@ -149,30 +156,19 @@ func Test_KeyPrepares(t *testing.T) {
 					return nil, true
 				},
 			},
-			object: nil,
+			object: (*PublicKeys)(nil),
 		},
 		{
 			name:    "preparePrivateKeysQuery no result",
 			prepare: preparePrivateKeysQuery,
 			want: want{
 				sqlExpectations: mockQueries(
-					regexp.QuoteMeta(`SELECT projections.keys3.id,`+
-						` projections.keys3.creation_date,`+
-						` projections.keys3.change_date,`+
-						` projections.keys3.sequence,`+
-						` projections.keys3.resource_owner,`+
-						` projections.keys3.algorithm,`+
-						` projections.keys3.use,`+
-						` projections.keys3_private.expiry,`+
-						` projections.keys3_private.key,`+
-						` COUNT(*) OVER ()`+
-						` FROM projections.keys3`+
-						` LEFT JOIN projections.keys3_private ON projections.keys3.id = projections.keys3_private.id`),
+					regexp.QuoteMeta(preparePrivateKeysStmt),
 					nil,
 					nil,
 				),
 				err: func(err error) (error, bool) {
-					if !errs.IsNotFound(err) {
+					if !zerrors.IsNotFound(err) {
 						return fmt.Errorf("err should be zitadel.NotFoundError got: %w", err), false
 					}
 					return nil, true
@@ -185,30 +181,8 @@ func Test_KeyPrepares(t *testing.T) {
 			prepare: preparePrivateKeysQuery,
 			want: want{
 				sqlExpectations: mockQueries(
-					regexp.QuoteMeta(`SELECT projections.keys3.id,`+
-						` projections.keys3.creation_date,`+
-						` projections.keys3.change_date,`+
-						` projections.keys3.sequence,`+
-						` projections.keys3.resource_owner,`+
-						` projections.keys3.algorithm,`+
-						` projections.keys3.use,`+
-						` projections.keys3_private.expiry,`+
-						` projections.keys3_private.key,`+
-						` COUNT(*) OVER ()`+
-						` FROM projections.keys3`+
-						` LEFT JOIN projections.keys3_private ON projections.keys3.id = projections.keys3_private.id`),
-					[]string{
-						"id",
-						"creation_date",
-						"change_date",
-						"sequence",
-						"resource_owner",
-						"algorithm",
-						"use",
-						"expiry",
-						"key",
-						"count",
-					},
+					regexp.QuoteMeta(preparePrivateKeysStmt),
+					preparePublicKeysCols,
 					[][]driver.Value{
 						{
 							"key-id",
@@ -237,7 +211,7 @@ func Test_KeyPrepares(t *testing.T) {
 							sequence:      20211109,
 							resourceOwner: "ro",
 							algorithm:     "RS256",
-							use:           domain.KeyUsageSigning,
+							use:           crypto.KeyUsageSigning,
 						},
 						expiry: testNow,
 						privateKey: &crypto.CryptoValue{
@@ -255,18 +229,7 @@ func Test_KeyPrepares(t *testing.T) {
 			prepare: preparePrivateKeysQuery,
 			want: want{
 				sqlExpectations: mockQueryErr(
-					regexp.QuoteMeta(`SELECT projections.keys3.id,`+
-						` projections.keys3.creation_date,`+
-						` projections.keys3.change_date,`+
-						` projections.keys3.sequence,`+
-						` projections.keys3.resource_owner,`+
-						` projections.keys3.algorithm,`+
-						` projections.keys3.use,`+
-						` projections.keys3_private.expiry,`+
-						` projections.keys3_private.key,`+
-						` COUNT(*) OVER ()`+
-						` FROM projections.keys3`+
-						` LEFT JOIN projections.keys3_private ON projections.keys3.id = projections.keys3_private.id`),
+					regexp.QuoteMeta(preparePrivateKeysStmt),
 					sql.ErrConnDone,
 				),
 				err: func(err error) (error, bool) {
@@ -276,12 +239,12 @@ func Test_KeyPrepares(t *testing.T) {
 					return nil, true
 				},
 			},
-			object: nil,
+			object: (*PrivateKeys)(nil),
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assertPrepare(t, tt.prepare, tt.object, tt.want.sqlExpectations, tt.want.err)
+			assertPrepare(t, tt.prepare, tt.object, tt.want.sqlExpectations, tt.want.err, defaultPrepareArgs...)
 		})
 	}
 }
@@ -292,4 +255,201 @@ func fromBase16(base16 string) *big.Int {
 		panic("bad number: " + base16)
 	}
 	return i
+}
+
+const pubKey = `-----BEGIN PUBLIC KEY-----
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAs38btwb3c7r0tMaQpGvB
+mY+mPwMU/LpfuPoC0k2t4RsKp0fv40SMl50CRrHgk395wch8PMPYbl3+8TtYAJuy
+rFALIj3Ff1UcKIk0hOH5DDsfh7/q2wFuncTmS6bifYo8CfSq2vDGnM7nZnEvxY/M
+fSydZdcmIqlkUpfQmtzExw9+tSe5Dxq6gn5JtlGgLgZGt69r5iMMrTEGhhVAXzNu
+MZbmlCoBru+rC8ITlTX/0V1ZcsSbL8tYWhthyu9x6yjo1bH85wiVI4gs0MhU8f2a
++kjL/KGZbR14Ua2eo6tonBZLC5DHWM2TkYXgRCDPufjcgmzN0Lm91E4P8KvBcvly
+6QIDAQAB
+-----END PUBLIC KEY-----
+`
+
+func TestQueries_GetPublicKeyByID(t *testing.T) {
+	now := time.Now()
+	future := now.Add(time.Hour)
+
+	tests := []struct {
+		name       string
+		eventstore func(*testing.T) *eventstore.Eventstore
+		encryption func(*testing.T) *crypto.MockEncryptionAlgorithm
+		want       *rsaPublicKey
+		wantErr    error
+	}{
+		{
+			name: "filter error",
+			eventstore: expectEventstore(
+				expectFilterError(io.ErrClosedPipe),
+			),
+			wantErr: io.ErrClosedPipe,
+		},
+		{
+			name: "not found error",
+			eventstore: expectEventstore(
+				expectFilter(),
+			),
+			wantErr: zerrors.ThrowNotFound(nil, "QUERY-Ahf7x", "Errors.Key.NotFound"),
+		},
+		{
+			name: "decrypt error",
+			eventstore: expectEventstore(
+				expectFilter(
+					eventFromEventPusher(key_repo.NewAddedEvent(context.Background(),
+						&eventstore.Aggregate{
+							ID:            "keyID",
+							Type:          key_repo.AggregateType,
+							ResourceOwner: "instanceID",
+							InstanceID:    "instanceID",
+							Version:       key_repo.AggregateVersion,
+						},
+						crypto.KeyUsageSigning, "alg",
+						&crypto.CryptoValue{
+							CryptoType: crypto.TypeEncryption,
+							Algorithm:  "alg",
+							KeyID:      "keyID",
+							Crypted:    []byte("private"),
+						},
+						&crypto.CryptoValue{
+							CryptoType: crypto.TypeEncryption,
+							Algorithm:  "alg",
+							KeyID:      "keyID",
+							Crypted:    []byte("public"),
+						},
+						future,
+						future,
+					)),
+				),
+			),
+			encryption: func(t *testing.T) *crypto.MockEncryptionAlgorithm {
+				encryption := crypto.NewMockEncryptionAlgorithm(gomock.NewController(t))
+				expect := encryption.EXPECT()
+				expect.Algorithm().Return("alg")
+				expect.DecryptionKeyIDs().Return([]string{})
+				return encryption
+			},
+			wantErr: zerrors.ThrowInternal(nil, "QUERY-Ie4oh", "Errors.Internal"),
+		},
+		{
+			name: "parse error",
+			eventstore: expectEventstore(
+				expectFilter(
+					eventFromEventPusher(key_repo.NewAddedEvent(context.Background(),
+						&eventstore.Aggregate{
+							ID:            "keyID",
+							Type:          key_repo.AggregateType,
+							ResourceOwner: "instanceID",
+							InstanceID:    "instanceID",
+							Version:       key_repo.AggregateVersion,
+						},
+						crypto.KeyUsageSigning, "alg",
+						&crypto.CryptoValue{
+							CryptoType: crypto.TypeEncryption,
+							Algorithm:  "alg",
+							KeyID:      "keyID",
+							Crypted:    []byte("private"),
+						},
+						&crypto.CryptoValue{
+							CryptoType: crypto.TypeEncryption,
+							Algorithm:  "alg",
+							KeyID:      "keyID",
+							Crypted:    []byte("public"),
+						},
+						future,
+						future,
+					)),
+				),
+			),
+			encryption: func(t *testing.T) *crypto.MockEncryptionAlgorithm {
+				encryption := crypto.NewMockEncryptionAlgorithm(gomock.NewController(t))
+				expect := encryption.EXPECT()
+				expect.Algorithm().Return("alg")
+				expect.DecryptionKeyIDs().Return([]string{"keyID"})
+				expect.Decrypt([]byte("public"), "keyID").Return([]byte("foo"), nil)
+				return encryption
+			},
+			wantErr: zerrors.ThrowInternal(nil, "QUERY-Kai2Z", "Errors.Internal"),
+		},
+		{
+			name: "success",
+			eventstore: expectEventstore(
+				expectFilter(
+					eventFromEventPusher(key_repo.NewAddedEvent(context.Background(),
+						&eventstore.Aggregate{
+							ID:            "keyID",
+							Type:          key_repo.AggregateType,
+							ResourceOwner: "instanceID",
+							InstanceID:    "instanceID",
+							Version:       key_repo.AggregateVersion,
+						},
+						crypto.KeyUsageSigning, "alg",
+						&crypto.CryptoValue{
+							CryptoType: crypto.TypeEncryption,
+							Algorithm:  "alg",
+							KeyID:      "keyID",
+							Crypted:    []byte("private"),
+						},
+						&crypto.CryptoValue{
+							CryptoType: crypto.TypeEncryption,
+							Algorithm:  "alg",
+							KeyID:      "keyID",
+							Crypted:    []byte("public"),
+						},
+						future,
+						future,
+					)),
+				),
+			),
+			encryption: func(t *testing.T) *crypto.MockEncryptionAlgorithm {
+				encryption := crypto.NewMockEncryptionAlgorithm(gomock.NewController(t))
+				expect := encryption.EXPECT()
+				expect.Algorithm().Return("alg")
+				expect.DecryptionKeyIDs().Return([]string{"keyID"})
+				expect.Decrypt([]byte("public"), "keyID").Return([]byte(pubKey), nil)
+				return encryption
+			},
+			want: &rsaPublicKey{
+				key: key{
+					id:            "keyID",
+					resourceOwner: "instanceID",
+					algorithm:     "alg",
+					use:           crypto.KeyUsageSigning,
+				},
+				expiry: future,
+				publicKey: func() *rsa.PublicKey {
+					publicKey, err := crypto.BytesToPublicKey([]byte(pubKey))
+					if err != nil {
+						panic(err)
+					}
+					return publicKey
+				}(),
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			q := &Queries{
+				eventstore: tt.eventstore(t),
+			}
+			if tt.encryption != nil {
+				q.keyEncryptionAlgorithm = tt.encryption(t)
+			}
+			ctx := authz.NewMockContext("instanceID", "orgID", "loginClient")
+			key, err := q.GetPublicKeyByID(ctx, "keyID")
+			if tt.wantErr != nil {
+				require.ErrorIs(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			require.NotNil(t, key)
+
+			got := key.(*rsaPublicKey)
+			assert.WithinDuration(t, tt.want.expiry, got.expiry, time.Second)
+			tt.want.expiry = time.Time{}
+			got.expiry = time.Time{}
+			assert.Equal(t, tt.want, got)
+		})
+	}
 }

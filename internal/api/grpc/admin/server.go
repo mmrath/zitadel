@@ -2,15 +2,15 @@ package admin
 
 import (
 	"context"
+	"time"
+
 	"google.golang.org/grpc"
 
-	"github.com/zitadel/zitadel/internal/admin/repository"
 	"github.com/zitadel/zitadel/internal/admin/repository/eventsourcing"
 	"github.com/zitadel/zitadel/internal/api/assets"
 	"github.com/zitadel/zitadel/internal/api/authz"
 	"github.com/zitadel/zitadel/internal/api/grpc/server"
 	"github.com/zitadel/zitadel/internal/command"
-	"github.com/zitadel/zitadel/internal/config/systemdefaults"
 	"github.com/zitadel/zitadel/internal/crypto"
 	"github.com/zitadel/zitadel/internal/query"
 	"github.com/zitadel/zitadel/pkg/grpc/admin"
@@ -24,13 +24,12 @@ var _ admin.AdminServiceServer = (*Server)(nil)
 
 type Server struct {
 	admin.UnimplementedAdminServiceServer
-	database        string
-	command         *command.Commands
-	query           *query.Queries
-	administrator   repository.AdministratorRepository
-	assetsAPIDomain func(context.Context) string
-	userCodeAlg     crypto.EncryptionAlgorithm
-	passwordHashAlg crypto.HashAlgorithm
+	database          string
+	command           *command.Commands
+	query             *query.Queries
+	assetsAPIDomain   func(context.Context) string
+	userCodeAlg       crypto.EncryptionAlgorithm
+	auditLogRetention time.Duration
 }
 
 type Config struct {
@@ -41,19 +40,16 @@ func CreateServer(
 	database string,
 	command *command.Commands,
 	query *query.Queries,
-	sd systemdefaults.SystemDefaults,
-	repo repository.Repository,
-	externalSecure bool,
 	userCodeAlg crypto.EncryptionAlgorithm,
+	auditLogRetention time.Duration,
 ) *Server {
 	return &Server{
-		database:        database,
-		command:         command,
-		query:           query,
-		administrator:   repo,
-		assetsAPIDomain: assets.AssetAPI(externalSecure),
-		userCodeAlg:     userCodeAlg,
-		passwordHashAlg: crypto.NewBCrypt(sd.SecretGenerators.PasswordSaltCost),
+		database:          database,
+		command:           command,
+		query:             query,
+		assetsAPIDomain:   assets.AssetAPI(),
+		userCodeAlg:       userCodeAlg,
+		auditLogRetention: auditLogRetention,
 	}
 }
 
@@ -66,17 +62,21 @@ func (s *Server) AppName() string {
 }
 
 func (s *Server) MethodPrefix() string {
-	return admin.AdminService_MethodPrefix
+	return admin.AdminService_ServiceDesc.ServiceName
 }
 
 func (s *Server) AuthMethods() authz.MethodMapping {
 	return admin.AdminService_AuthMethods
 }
 
-func (s *Server) RegisterGateway() server.GatewayFunc {
-	return admin.RegisterAdminServiceHandlerFromEndpoint
+func (s *Server) RegisterGateway() server.RegisterGatewayFunc {
+	return admin.RegisterAdminServiceHandler
 }
 
 func (s *Server) GatewayPathPrefix() string {
+	return GatewayPathPrefix()
+}
+
+func GatewayPathPrefix() string {
 	return "/admin/v1"
 }

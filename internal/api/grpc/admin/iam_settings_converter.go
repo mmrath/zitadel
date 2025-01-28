@@ -1,15 +1,18 @@
 package admin
 
 import (
+	"context"
+
 	"google.golang.org/protobuf/types/known/durationpb"
 
+	"github.com/zitadel/zitadel/internal/api/authz"
 	"github.com/zitadel/zitadel/internal/api/grpc/object"
 	obj_grpc "github.com/zitadel/zitadel/internal/api/grpc/object"
+	"github.com/zitadel/zitadel/internal/command"
 	"github.com/zitadel/zitadel/internal/crypto"
 	"github.com/zitadel/zitadel/internal/domain"
-	"github.com/zitadel/zitadel/internal/errors"
-	"github.com/zitadel/zitadel/internal/notification/channels/smtp"
 	"github.com/zitadel/zitadel/internal/query"
+	"github.com/zitadel/zitadel/internal/zerrors"
 	admin_pb "github.com/zitadel/zitadel/pkg/grpc/admin"
 	settings_pb "github.com/zitadel/zitadel/pkg/grpc/settings"
 )
@@ -47,7 +50,7 @@ func SecretGeneratorQueryToModel(apiQuery *settings_pb.SecretGeneratorQuery) (qu
 		domainType := SecretGeneratorTypeToDomain(q.TypeQuery.GeneratorType)
 		return query.NewSecretGeneratorTypeSearchQuery(int32(domainType))
 	default:
-		return nil, errors.ThrowInvalidArgument(nil, "ORG-fm9es", "List.Query.Invalid")
+		return nil, zerrors.ThrowInvalidArgument(nil, "ORG-fm9es", "List.Query.Invalid")
 	}
 }
 
@@ -62,8 +65,17 @@ func UpdateSecretGeneratorToConfig(req *admin_pb.UpdateSecretGeneratorRequest) *
 	}
 }
 
+func SecretGeneratorsToPb(generators []*query.SecretGenerator) []*settings_pb.SecretGenerator {
+	list := make([]*settings_pb.SecretGenerator, len(generators))
+	for i, generator := range generators {
+		list[i] = SecretGeneratorToPb(generator)
+	}
+	return list
+}
+
 func SecretGeneratorToPb(generator *query.SecretGenerator) *settings_pb.SecretGenerator {
 	mapped := &settings_pb.SecretGenerator{
+		GeneratorType:       SecretGeneratorTypeToPb(generator.GeneratorType),
 		Length:              uint32(generator.Length),
 		Expiry:              durationpb.New(generator.Expiry),
 		IncludeUpperLetters: generator.IncludeUpperLetters,
@@ -89,6 +101,10 @@ func SecretGeneratorTypeToPb(generatorType domain.SecretGeneratorType) settings_
 		return settings_pb.SecretGeneratorType_SECRET_GENERATOR_TYPE_PASSWORDLESS_INIT_CODE
 	case domain.SecretGeneratorTypeAppSecret:
 		return settings_pb.SecretGeneratorType_SECRET_GENERATOR_TYPE_APP_SECRET
+	case domain.SecretGeneratorTypeOTPSMS:
+		return settings_pb.SecretGeneratorType_SECRET_GENERATOR_TYPE_OTP_SMS
+	case domain.SecretGeneratorTypeOTPEmail:
+		return settings_pb.SecretGeneratorType_SECRET_GENERATOR_TYPE_OTP_EMAIL
 	default:
 		return settings_pb.SecretGeneratorType_SECRET_GENERATOR_TYPE_UNSPECIFIED
 	}
@@ -108,44 +124,75 @@ func SecretGeneratorTypeToDomain(generatorType settings_pb.SecretGeneratorType) 
 		return domain.SecretGeneratorTypePasswordlessInitCode
 	case settings_pb.SecretGeneratorType_SECRET_GENERATOR_TYPE_APP_SECRET:
 		return domain.SecretGeneratorTypeAppSecret
+	case settings_pb.SecretGeneratorType_SECRET_GENERATOR_TYPE_OTP_SMS:
+		return domain.SecretGeneratorTypeOTPSMS
+	case settings_pb.SecretGeneratorType_SECRET_GENERATOR_TYPE_OTP_EMAIL:
+		return domain.SecretGeneratorTypeOTPEmail
 	default:
 		return domain.SecretGeneratorTypeUnspecified
 	}
 }
 
-func AddSMTPToConfig(req *admin_pb.AddSMTPConfigRequest) *smtp.EmailConfig {
-	return &smtp.EmailConfig{
-		Tls:      req.Tls,
-		From:     req.SenderAddress,
-		FromName: req.SenderName,
-		SMTP: smtp.SMTP{
-			Host:     req.Host,
-			User:     req.User,
-			Password: req.Password,
-		},
+func addSMTPToConfig(ctx context.Context, req *admin_pb.AddSMTPConfigRequest) *command.AddSMTPConfig {
+	return &command.AddSMTPConfig{
+		ResourceOwner:  authz.GetInstance(ctx).InstanceID(),
+		Description:    req.Description,
+		Tls:            req.Tls,
+		From:           req.SenderAddress,
+		FromName:       req.SenderName,
+		ReplyToAddress: req.ReplyToAddress,
+		Host:           req.Host,
+		User:           req.User,
+		Password:       req.Password,
 	}
 }
 
-func UpdateSMTPToConfig(req *admin_pb.UpdateSMTPConfigRequest) *smtp.EmailConfig {
-	return &smtp.EmailConfig{
-		Tls:      req.Tls,
-		From:     req.SenderAddress,
-		FromName: req.SenderName,
-		SMTP: smtp.SMTP{
-			Host: req.Host,
-			User: req.User,
-		},
+func updateSMTPToConfig(ctx context.Context, req *admin_pb.UpdateSMTPConfigRequest) *command.ChangeSMTPConfig {
+	return &command.ChangeSMTPConfig{
+		ResourceOwner:  authz.GetInstance(ctx).InstanceID(),
+		ID:             req.Id,
+		Description:    req.Description,
+		Tls:            req.Tls,
+		From:           req.SenderAddress,
+		FromName:       req.SenderName,
+		ReplyToAddress: req.ReplyToAddress,
+		Host:           req.Host,
+		User:           req.User,
+		Password:       req.Password,
 	}
 }
 
 func SMTPConfigToPb(smtp *query.SMTPConfig) *settings_pb.SMTPConfig {
-	mapped := &settings_pb.SMTPConfig{
-		Tls:           smtp.TLS,
-		SenderAddress: smtp.SenderAddress,
-		SenderName:    smtp.SenderName,
-		Host:          smtp.Host,
-		User:          smtp.User,
-		Details:       obj_grpc.ToViewDetailsPb(smtp.Sequence, smtp.CreationDate, smtp.ChangeDate, smtp.AggregateID),
+	if smtp.SMTPConfig != nil {
+		return &settings_pb.SMTPConfig{
+			Description:    smtp.Description,
+			Tls:            smtp.SMTPConfig.TLS,
+			SenderAddress:  smtp.SMTPConfig.SenderAddress,
+			SenderName:     smtp.SMTPConfig.SenderName,
+			ReplyToAddress: smtp.SMTPConfig.ReplyToAddress,
+			Host:           smtp.SMTPConfig.Host,
+			User:           smtp.SMTPConfig.User,
+			Details:        obj_grpc.ToViewDetailsPb(smtp.Sequence, smtp.CreationDate, smtp.ChangeDate, smtp.ResourceOwner),
+			Id:             smtp.ID,
+			State:          settings_pb.SMTPConfigState(smtp.State),
+		}
 	}
-	return mapped
+	return nil
+}
+
+func SecurityPolicyToPb(policy *query.SecurityPolicy) *settings_pb.SecurityPolicy {
+	return &settings_pb.SecurityPolicy{
+		Details:               obj_grpc.ToViewDetailsPb(policy.Sequence, policy.CreationDate, policy.ChangeDate, policy.AggregateID),
+		EnableIframeEmbedding: policy.EnableIframeEmbedding,
+		AllowedOrigins:        policy.AllowedOrigins,
+		EnableImpersonation:   policy.EnableImpersonation,
+	}
+}
+
+func securityPolicyToCommand(req *admin_pb.SetSecurityPolicyRequest) *command.SecurityPolicy {
+	return &command.SecurityPolicy{
+		EnableIframeEmbedding: req.GetEnableIframeEmbedding(),
+		AllowedOrigins:        req.GetAllowedOrigins(),
+		EnableImpersonation:   req.GetEnableImpersonation(),
+	}
 }

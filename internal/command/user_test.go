@@ -8,24 +8,19 @@ import (
 	"github.com/stretchr/testify/assert"
 	"golang.org/x/text/language"
 
-	"github.com/zitadel/zitadel/internal/repository/member"
-	"github.com/zitadel/zitadel/internal/repository/org"
-	"github.com/zitadel/zitadel/internal/repository/project"
-
 	"github.com/zitadel/zitadel/internal/command/preparation"
 	"github.com/zitadel/zitadel/internal/domain"
-	"github.com/zitadel/zitadel/internal/errors"
-	caos_errs "github.com/zitadel/zitadel/internal/errors"
 	"github.com/zitadel/zitadel/internal/eventstore"
-	"github.com/zitadel/zitadel/internal/eventstore/repository"
-	"github.com/zitadel/zitadel/internal/id"
 	"github.com/zitadel/zitadel/internal/repository/instance"
+	"github.com/zitadel/zitadel/internal/repository/org"
+	"github.com/zitadel/zitadel/internal/repository/project"
 	"github.com/zitadel/zitadel/internal/repository/user"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 func TestCommandSide_UsernameChange(t *testing.T) {
 	type fields struct {
-		eventstore *eventstore.Eventstore
+		eventstore func(*testing.T) *eventstore.Eventstore
 	}
 	type (
 		args struct {
@@ -48,9 +43,7 @@ func TestCommandSide_UsernameChange(t *testing.T) {
 		{
 			name: "userid missing, invalid argument error",
 			fields: fields{
-				eventstore: eventstoreExpect(
-					t,
-				),
+				eventstore: expectEventstore(),
 			},
 			args: args{
 				ctx:      context.Background(),
@@ -59,15 +52,13 @@ func TestCommandSide_UsernameChange(t *testing.T) {
 				username: "username",
 			},
 			res: res{
-				err: caos_errs.IsErrorInvalidArgument,
+				err: zerrors.IsErrorInvalidArgument,
 			},
 		},
 		{
 			name: "orgid missing, invalid argument error",
 			fields: fields{
-				eventstore: eventstoreExpect(
-					t,
-				),
+				eventstore: expectEventstore(),
 			},
 			args: args{
 				ctx:      context.Background(),
@@ -76,15 +67,13 @@ func TestCommandSide_UsernameChange(t *testing.T) {
 				username: "username",
 			},
 			res: res{
-				err: caos_errs.IsErrorInvalidArgument,
+				err: zerrors.IsErrorInvalidArgument,
 			},
 		},
 		{
 			name: "username missing, invalid argument error",
 			fields: fields{
-				eventstore: eventstoreExpect(
-					t,
-				),
+				eventstore: expectEventstore(),
 			},
 			args: args{
 				ctx:      context.Background(),
@@ -93,15 +82,13 @@ func TestCommandSide_UsernameChange(t *testing.T) {
 				username: "",
 			},
 			res: res{
-				err: caos_errs.IsErrorInvalidArgument,
+				err: zerrors.IsErrorInvalidArgument,
 			},
 		},
 		{
 			name: "username only spaces, invalid argument error",
 			fields: fields{
-				eventstore: eventstoreExpect(
-					t,
-				),
+				eventstore: expectEventstore(),
 			},
 			args: args{
 				ctx:      context.Background(),
@@ -110,14 +97,13 @@ func TestCommandSide_UsernameChange(t *testing.T) {
 				username: "  ",
 			},
 			res: res{
-				err: caos_errs.IsErrorInvalidArgument,
+				err: zerrors.IsErrorInvalidArgument,
 			},
 		},
 		{
 			name: "user removed, not found error",
 			fields: fields{
-				eventstore: eventstoreExpect(
-					t,
+				eventstore: expectEventstore(
 					expectFilter(),
 				),
 			},
@@ -128,14 +114,13 @@ func TestCommandSide_UsernameChange(t *testing.T) {
 				username: "username",
 			},
 			res: res{
-				err: caos_errs.IsNotFound,
+				err: zerrors.IsNotFound,
 			},
 		},
 		{
 			name: "username not changed, precondition error",
 			fields: fields{
-				eventstore: eventstoreExpect(
-					t,
+				eventstore: expectEventstore(
 					expectFilter(
 						eventFromEventPusher(
 							user.NewHumanAddedEvent(context.Background(),
@@ -161,14 +146,13 @@ func TestCommandSide_UsernameChange(t *testing.T) {
 				username: "username",
 			},
 			res: res{
-				err: caos_errs.IsPreconditionFailed,
+				err: zerrors.IsPreconditionFailed,
 			},
 		},
 		{
 			name: "username not changed (spaces), precondition error",
 			fields: fields{
-				eventstore: eventstoreExpect(
-					t,
+				eventstore: expectEventstore(
 					expectFilter(
 						eventFromEventPusher(
 							user.NewHumanAddedEvent(context.Background(),
@@ -194,14 +178,13 @@ func TestCommandSide_UsernameChange(t *testing.T) {
 				username: "username ",
 			},
 			res: res{
-				err: caos_errs.IsPreconditionFailed,
+				err: zerrors.IsPreconditionFailed,
 			},
 		},
 		{
 			name: "org iam policy not found, precondition error",
 			fields: fields{
-				eventstore: eventstoreExpect(
-					t,
+				eventstore: expectEventstore(
 					expectFilter(
 						eventFromEventPusher(
 							user.NewHumanAddedEvent(context.Background(),
@@ -227,14 +210,13 @@ func TestCommandSide_UsernameChange(t *testing.T) {
 				username: "username",
 			},
 			res: res{
-				err: caos_errs.IsPreconditionFailed,
+				err: zerrors.IsPreconditionFailed,
 			},
 		},
 		{
-			name: "invalid username, precondition error",
+			name: "domain verified, wrong org",
 			fields: fields{
-				eventstore: eventstoreExpect(
-					t,
+				eventstore: expectEventstore(
 					expectFilter(
 						eventFromEventPusher(
 							user.NewHumanAddedEvent(context.Background(),
@@ -256,9 +238,17 @@ func TestCommandSide_UsernameChange(t *testing.T) {
 						eventFromEventPusher(
 							instance.NewDomainPolicyAddedEvent(context.Background(),
 								&user.NewAggregate("user1", "org1").Aggregate,
+								false,
 								true,
 								true,
-								true,
+							),
+						),
+					),
+					expectFilter(
+						eventFromEventPusher(
+							org.NewDomainVerifiedEvent(context.Background(),
+								&org.NewAggregate("org1").Aggregate,
+								"test.ch",
 							),
 						),
 					),
@@ -266,19 +256,18 @@ func TestCommandSide_UsernameChange(t *testing.T) {
 			},
 			args: args{
 				ctx:      context.Background(),
-				orgID:    "org1",
+				orgID:    "wrong",
 				userID:   "user1",
 				username: "test@test.ch",
 			},
 			res: res{
-				err: caos_errs.IsPreconditionFailed,
+				err: zerrors.IsErrorInvalidArgument,
 			},
 		},
 		{
-			name: "change username, ok",
+			name: "email as username, ok",
 			fields: fields{
-				eventstore: eventstoreExpect(
-					t,
+				eventstore: expectEventstore(
 					expectFilter(
 						eventFromEventPusher(
 							user.NewHumanAddedEvent(context.Background(),
@@ -307,18 +296,126 @@ func TestCommandSide_UsernameChange(t *testing.T) {
 						),
 					),
 					expectPush(
-						[]*repository.Event{
-							eventFromEventPusher(
-								user.NewUsernameChangedEvent(context.Background(),
-									&user.NewAggregate("user1", "org1").Aggregate,
-									"username",
-									"username1",
-									true,
-								),
+						user.NewUsernameChangedEvent(context.Background(),
+							&user.NewAggregate("user1", "org1").Aggregate,
+							"username",
+							"test@test.ch",
+							true,
+						),
+					),
+				),
+			},
+			args: args{
+				ctx:      context.Background(),
+				orgID:    "org1",
+				userID:   "user1",
+				username: "test@test.ch",
+			},
+			res: res{
+				want: &domain.ObjectDetails{
+					ResourceOwner: "org1",
+				},
+			},
+		},
+		{
+			name: "email as username, verified domain, ok",
+			fields: fields{
+				eventstore: expectEventstore(
+					expectFilter(
+						eventFromEventPusher(
+							user.NewHumanAddedEvent(context.Background(),
+								&user.NewAggregate("user1", "org1").Aggregate,
+								"username",
+								"firstname",
+								"lastname",
+								"nickname",
+								"displayname",
+								language.German,
+								domain.GenderUnspecified,
+								"email@test.ch",
+								true,
 							),
-						},
-						uniqueConstraintsFromEventConstraint(user.NewRemoveUsernameUniqueConstraint("username", "org1", true)),
-						uniqueConstraintsFromEventConstraint(user.NewAddUsernameUniqueConstraint("username1", "org1", true)),
+						),
+					),
+					expectFilter(),
+					expectFilter(
+						eventFromEventPusher(
+							instance.NewDomainPolicyAddedEvent(context.Background(),
+								&user.NewAggregate("user1", "org1").Aggregate,
+								false,
+								true,
+								true,
+							),
+						),
+					),
+					expectFilter(
+						eventFromEventPusher(
+							org.NewDomainVerifiedEvent(context.Background(),
+								&org.NewAggregate("org1").Aggregate,
+								"test.ch",
+							),
+						),
+					),
+					expectPush(
+						user.NewUsernameChangedEvent(context.Background(),
+							&user.NewAggregate("user1", "org1").Aggregate,
+							"username",
+							"test@test.ch",
+							false,
+						),
+					),
+				),
+			},
+			args: args{
+				ctx:      context.Background(),
+				orgID:    "org1",
+				userID:   "user1",
+				username: "test@test.ch",
+			},
+			res: res{
+				want: &domain.ObjectDetails{
+					ResourceOwner: "org1",
+				},
+			},
+		},
+		{
+			name: "change username, ok",
+			fields: fields{
+				eventstore: expectEventstore(
+					expectFilter(
+						eventFromEventPusher(
+							user.NewHumanAddedEvent(context.Background(),
+								&user.NewAggregate("user1", "org1").Aggregate,
+								"username",
+								"firstname",
+								"lastname",
+								"nickname",
+								"displayname",
+								language.German,
+								domain.GenderUnspecified,
+								"email@test.ch",
+								true,
+							),
+						),
+					),
+					expectFilter(),
+					expectFilter(
+						eventFromEventPusher(
+							instance.NewDomainPolicyAddedEvent(context.Background(),
+								&user.NewAggregate("user1", "org1").Aggregate,
+								true,
+								true,
+								true,
+							),
+						),
+					),
+					expectPush(
+						user.NewUsernameChangedEvent(context.Background(),
+							&user.NewAggregate("user1", "org1").Aggregate,
+							"username",
+							"username1",
+							true,
+						),
 					),
 				),
 			},
@@ -337,8 +434,7 @@ func TestCommandSide_UsernameChange(t *testing.T) {
 		{
 			name: "change username (remove spaces), ok",
 			fields: fields{
-				eventstore: eventstoreExpect(
-					t,
+				eventstore: expectEventstore(
 					expectFilter(
 						eventFromEventPusher(
 							user.NewHumanAddedEvent(context.Background(),
@@ -367,18 +463,12 @@ func TestCommandSide_UsernameChange(t *testing.T) {
 						),
 					),
 					expectPush(
-						[]*repository.Event{
-							eventFromEventPusher(
-								user.NewUsernameChangedEvent(context.Background(),
-									&user.NewAggregate("user1", "org1").Aggregate,
-									"username",
-									"username1",
-									true,
-								),
-							),
-						},
-						uniqueConstraintsFromEventConstraint(user.NewRemoveUsernameUniqueConstraint("username", "org1", true)),
-						uniqueConstraintsFromEventConstraint(user.NewAddUsernameUniqueConstraint("username1", "org1", true)),
+						user.NewUsernameChangedEvent(context.Background(),
+							&user.NewAggregate("user1", "org1").Aggregate,
+							"username",
+							"username1",
+							true,
+						),
 					),
 				),
 			},
@@ -398,7 +488,7 @@ func TestCommandSide_UsernameChange(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			r := &Commands{
-				eventstore: tt.fields.eventstore,
+				eventstore: tt.fields.eventstore(t),
 			}
 			got, err := r.ChangeUsername(tt.args.ctx, tt.args.orgID, tt.args.userID, tt.args.username)
 			if tt.res.err == nil {
@@ -408,7 +498,7 @@ func TestCommandSide_UsernameChange(t *testing.T) {
 				t.Errorf("got wrong err: %v ", err)
 			}
 			if tt.res.err == nil {
-				assert.Equal(t, tt.res.want, got)
+				assertObjectDetails(t, tt.res.want, got)
 			}
 		})
 	}
@@ -448,7 +538,7 @@ func TestCommandSide_DeactivateUser(t *testing.T) {
 				userID: "",
 			},
 			res: res{
-				err: caos_errs.IsErrorInvalidArgument,
+				err: zerrors.IsErrorInvalidArgument,
 			},
 		},
 		{
@@ -465,7 +555,7 @@ func TestCommandSide_DeactivateUser(t *testing.T) {
 				userID: "user1",
 			},
 			res: res{
-				err: caos_errs.IsNotFound,
+				err: zerrors.IsNotFound,
 			},
 		},
 		{
@@ -502,7 +592,7 @@ func TestCommandSide_DeactivateUser(t *testing.T) {
 				userID: "user1",
 			},
 			res: res{
-				err: caos_errs.IsPreconditionFailed,
+				err: zerrors.IsPreconditionFailed,
 			},
 		},
 		{
@@ -527,13 +617,9 @@ func TestCommandSide_DeactivateUser(t *testing.T) {
 						),
 					),
 					expectPush(
-						[]*repository.Event{
-							eventFromEventPusher(
-								user.NewUserDeactivatedEvent(context.Background(),
-									&user.NewAggregate("user1", "org1").Aggregate,
-								),
-							),
-						},
+						user.NewUserDeactivatedEvent(context.Background(),
+							&user.NewAggregate("user1", "org1").Aggregate,
+						),
 					),
 				),
 			},
@@ -562,7 +648,7 @@ func TestCommandSide_DeactivateUser(t *testing.T) {
 				t.Errorf("got wrong err: %v ", err)
 			}
 			if tt.res.err == nil {
-				assert.Equal(t, tt.res.want, got)
+				assertObjectDetails(t, tt.res.want, got)
 			}
 		})
 	}
@@ -602,7 +688,7 @@ func TestCommandSide_ReactivateUser(t *testing.T) {
 				userID: "",
 			},
 			res: res{
-				err: caos_errs.IsErrorInvalidArgument,
+				err: zerrors.IsErrorInvalidArgument,
 			},
 		},
 		{
@@ -619,7 +705,7 @@ func TestCommandSide_ReactivateUser(t *testing.T) {
 				userID: "user1",
 			},
 			res: res{
-				err: caos_errs.IsNotFound,
+				err: zerrors.IsNotFound,
 			},
 		},
 		{
@@ -651,7 +737,7 @@ func TestCommandSide_ReactivateUser(t *testing.T) {
 				userID: "user1",
 			},
 			res: res{
-				err: caos_errs.IsPreconditionFailed,
+				err: zerrors.IsPreconditionFailed,
 			},
 		},
 		{
@@ -680,13 +766,9 @@ func TestCommandSide_ReactivateUser(t *testing.T) {
 						),
 					),
 					expectPush(
-						[]*repository.Event{
-							eventFromEventPusher(
-								user.NewUserReactivatedEvent(context.Background(),
-									&user.NewAggregate("user1", "org1").Aggregate,
-								),
-							),
-						},
+						user.NewUserReactivatedEvent(context.Background(),
+							&user.NewAggregate("user1", "org1").Aggregate,
+						),
 					),
 				),
 			},
@@ -715,7 +797,7 @@ func TestCommandSide_ReactivateUser(t *testing.T) {
 				t.Errorf("got wrong err: %v ", err)
 			}
 			if tt.res.err == nil {
-				assert.Equal(t, tt.res.want, got)
+				assertObjectDetails(t, tt.res.want, got)
 			}
 		})
 	}
@@ -755,7 +837,7 @@ func TestCommandSide_LockUser(t *testing.T) {
 				userID: "",
 			},
 			res: res{
-				err: caos_errs.IsErrorInvalidArgument,
+				err: zerrors.IsErrorInvalidArgument,
 			},
 		},
 		{
@@ -772,7 +854,7 @@ func TestCommandSide_LockUser(t *testing.T) {
 				userID: "user1",
 			},
 			res: res{
-				err: caos_errs.IsNotFound,
+				err: zerrors.IsNotFound,
 			},
 		},
 		{
@@ -809,7 +891,7 @@ func TestCommandSide_LockUser(t *testing.T) {
 				userID: "user1",
 			},
 			res: res{
-				err: caos_errs.IsPreconditionFailed,
+				err: zerrors.IsPreconditionFailed,
 			},
 		},
 		{
@@ -834,13 +916,9 @@ func TestCommandSide_LockUser(t *testing.T) {
 						),
 					),
 					expectPush(
-						[]*repository.Event{
-							eventFromEventPusher(
-								user.NewUserLockedEvent(context.Background(),
-									&user.NewAggregate("user1", "org1").Aggregate,
-								),
-							),
-						},
+						user.NewUserLockedEvent(context.Background(),
+							&user.NewAggregate("user1", "org1").Aggregate,
+						),
 					),
 				),
 			},
@@ -869,7 +947,7 @@ func TestCommandSide_LockUser(t *testing.T) {
 				t.Errorf("got wrong err: %v ", err)
 			}
 			if tt.res.err == nil {
-				assert.Equal(t, tt.res.want, got)
+				assertObjectDetails(t, tt.res.want, got)
 			}
 		})
 	}
@@ -909,7 +987,7 @@ func TestCommandSide_UnlockUser(t *testing.T) {
 				userID: "",
 			},
 			res: res{
-				err: caos_errs.IsErrorInvalidArgument,
+				err: zerrors.IsErrorInvalidArgument,
 			},
 		},
 		{
@@ -926,7 +1004,7 @@ func TestCommandSide_UnlockUser(t *testing.T) {
 				userID: "user1",
 			},
 			res: res{
-				err: caos_errs.IsNotFound,
+				err: zerrors.IsNotFound,
 			},
 		},
 		{
@@ -958,7 +1036,7 @@ func TestCommandSide_UnlockUser(t *testing.T) {
 				userID: "user1",
 			},
 			res: res{
-				err: caos_errs.IsPreconditionFailed,
+				err: zerrors.IsPreconditionFailed,
 			},
 		},
 		{
@@ -987,13 +1065,9 @@ func TestCommandSide_UnlockUser(t *testing.T) {
 						),
 					),
 					expectPush(
-						[]*repository.Event{
-							eventFromEventPusher(
-								user.NewUserUnlockedEvent(context.Background(),
-									&user.NewAggregate("user1", "org1").Aggregate,
-								),
-							),
-						},
+						user.NewUserUnlockedEvent(context.Background(),
+							&user.NewAggregate("user1", "org1").Aggregate,
+						),
 					),
 				),
 			},
@@ -1022,7 +1096,7 @@ func TestCommandSide_UnlockUser(t *testing.T) {
 				t.Errorf("got wrong err: %v ", err)
 			}
 			if tt.res.err == nil {
-				assert.Equal(t, tt.res.want, got)
+				assertObjectDetails(t, tt.res.want, got)
 			}
 		})
 	}
@@ -1065,7 +1139,7 @@ func TestCommandSide_RemoveUser(t *testing.T) {
 				userID: "",
 			},
 			res: res{
-				err: caos_errs.IsErrorInvalidArgument,
+				err: zerrors.IsErrorInvalidArgument,
 			},
 		},
 		{
@@ -1082,7 +1156,7 @@ func TestCommandSide_RemoveUser(t *testing.T) {
 				userID: "user1",
 			},
 			res: res{
-				err: caos_errs.IsNotFound,
+				err: zerrors.IsNotFound,
 			},
 		},
 		{
@@ -1116,7 +1190,7 @@ func TestCommandSide_RemoveUser(t *testing.T) {
 				userID: "user1",
 			},
 			res: res{
-				err: caos_errs.IsPreconditionFailed,
+				err: zerrors.IsPreconditionFailed,
 			},
 		},
 		{
@@ -1152,17 +1226,12 @@ func TestCommandSide_RemoveUser(t *testing.T) {
 						),
 					),
 					expectPush(
-						[]*repository.Event{
-							eventFromEventPusher(
-								user.NewUserRemovedEvent(context.Background(),
-									&user.NewAggregate("user1", "org1").Aggregate,
-									"username",
-									nil,
-									true,
-								),
-							),
-						},
-						uniqueConstraintsFromEventConstraint(user.NewRemoveUsernameUniqueConstraint("username", "org1", true)),
+						user.NewUserRemovedEvent(context.Background(),
+							&user.NewAggregate("user1", "org1").Aggregate,
+							"username",
+							nil,
+							true,
+						),
 					),
 				),
 			},
@@ -1218,18 +1287,17 @@ func TestCommandSide_RemoveUser(t *testing.T) {
 						),
 					),
 					expectPush(
-						[]*repository.Event{
-							eventFromEventPusher(
-								user.NewUserRemovedEvent(context.Background(),
-									&user.NewAggregate("user1", "org1").Aggregate,
-									"username",
-									nil,
-									true,
-								),
-							),
-						},
-						uniqueConstraintsFromEventConstraint(user.NewRemoveUsernameUniqueConstraint("username", "org1", true)),
-						uniqueConstraintsFromEventConstraint(user.NewRemoveUserIDPLinkUniqueConstraint("idpConfigID", "externalUserID")),
+						user.NewUserRemovedEvent(context.Background(),
+							&user.NewAggregate("user1", "org1").Aggregate,
+							"username",
+							[]*domain.UserIDPLink{
+								{
+									IDPConfigID:    "idpConfigID",
+									ExternalUserID: "externalUserID",
+								},
+							},
+							true,
+						),
 					),
 				),
 			},
@@ -1277,46 +1345,29 @@ func TestCommandSide_RemoveUser(t *testing.T) {
 						),
 					),
 					expectPush(
-						[]*repository.Event{
-							eventFromEventPusher(
-								user.NewUserRemovedEvent(context.Background(),
-									&user.NewAggregate("user1", "org1").Aggregate,
-									"username",
-									nil,
-									true,
-								),
-							),
-							eventFromEventPusher(
-								instance.NewMemberCascadeRemovedEvent(context.Background(),
-									&instance.NewAggregate("INSTANCE").Aggregate,
-									"user1",
-								),
-							),
-							eventFromEventPusher(
-								org.NewMemberCascadeRemovedEvent(context.Background(),
-									&org.NewAggregate("org1").Aggregate,
-									"user1",
-								),
-							),
-							eventFromEventPusher(
-								project.NewProjectMemberCascadeRemovedEvent(context.Background(),
-									&project.NewAggregate("project1", "org1").Aggregate,
-									"user1",
-								),
-							),
-							eventFromEventPusher(
-								project.NewProjectGrantMemberCascadeRemovedEvent(context.Background(),
-									&project.NewAggregate("project1", "org1").Aggregate,
-									"user1",
-									"grant1",
-								),
-							),
-						},
-						uniqueConstraintsFromEventConstraint(user.NewRemoveUsernameUniqueConstraint("username", "org1", true)),
-						uniqueConstraintsFromEventConstraint(member.NewRemoveMemberUniqueConstraint("INSTANCE", "user1")),
-						uniqueConstraintsFromEventConstraint(member.NewRemoveMemberUniqueConstraint("org1", "user1")),
-						uniqueConstraintsFromEventConstraint(member.NewRemoveMemberUniqueConstraint("project1", "user1")),
-						uniqueConstraintsFromEventConstraint(project.NewRemoveProjectGrantMemberUniqueConstraint("project1", "user1", "grant1")),
+						user.NewUserRemovedEvent(context.Background(),
+							&user.NewAggregate("user1", "org1").Aggregate,
+							"username",
+							nil,
+							true,
+						),
+						instance.NewMemberCascadeRemovedEvent(context.Background(),
+							&instance.NewAggregate("INSTANCE").Aggregate,
+							"user1",
+						),
+						org.NewMemberCascadeRemovedEvent(context.Background(),
+							&org.NewAggregate("org1").Aggregate,
+							"user1",
+						),
+						project.NewProjectMemberCascadeRemovedEvent(context.Background(),
+							&project.NewAggregate("project1", "org1").Aggregate,
+							"user1",
+						),
+						project.NewProjectGrantMemberCascadeRemovedEvent(context.Background(),
+							&project.NewAggregate("project1", "org1").Aggregate,
+							"user1",
+							"grant1",
+						),
 					),
 				),
 			},
@@ -1372,94 +1423,11 @@ func TestCommandSide_RemoveUser(t *testing.T) {
 			got, err := r.RemoveUser(tt.args.ctx, tt.args.userID, tt.args.orgID, tt.args.cascadeUserMemberships, tt.args.cascadeUserGrants...)
 			if tt.res.err == nil {
 				assert.NoError(t, err)
-			}
-			if tt.res.err != nil && !tt.res.err(err) {
+			} else if !tt.res.err(err) {
 				t.Errorf("got wrong err: %v ", err)
+				return
 			}
-			if tt.res.err == nil {
-				assert.Equal(t, tt.res.want, got)
-			}
-		})
-	}
-}
-
-func TestCommandSide_AddUserToken(t *testing.T) {
-	type fields struct {
-		eventstore  *eventstore.Eventstore
-		idGenerator id.Generator
-	}
-	type (
-		args struct {
-			ctx      context.Context
-			orgID    string
-			agentID  string
-			clientID string
-			userID   string
-			audience []string
-			scopes   []string
-			lifetime time.Duration
-		}
-	)
-	type res struct {
-		want *domain.Token
-		err  func(error) bool
-	}
-	tests := []struct {
-		name   string
-		fields fields
-		args   args
-		res    res
-	}{
-		{
-			name: "userid missing, invalid argument error",
-			fields: fields{
-				eventstore: eventstoreExpect(
-					t,
-				),
-			},
-			args: args{
-				ctx:    context.Background(),
-				orgID:  "org1",
-				userID: "",
-			},
-			res: res{
-				err: caos_errs.IsErrorInvalidArgument,
-			},
-		},
-		{
-			name: "user not existing, not found error",
-			fields: fields{
-				eventstore: eventstoreExpect(
-					t,
-					expectFilter(),
-				),
-			},
-			args: args{
-				ctx:    context.Background(),
-				orgID:  "org1",
-				userID: "user1",
-			},
-			res: res{
-				err: caos_errs.IsNotFound,
-			},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			r := &Commands{
-				eventstore:  tt.fields.eventstore,
-				idGenerator: tt.fields.idGenerator,
-			}
-			got, err := r.AddUserToken(tt.args.ctx, tt.args.orgID, tt.args.agentID, tt.args.clientID, tt.args.userID, tt.args.audience, tt.args.scopes, tt.args.lifetime)
-			if tt.res.err == nil {
-				assert.NoError(t, err)
-			}
-			if tt.res.err != nil && !tt.res.err(err) {
-				t.Errorf("got wrong err: %v ", err)
-			}
-			if tt.res.err == nil {
-				assert.Equal(t, tt.res.want, got)
-			}
+			assertObjectDetails(t, tt.res.want, got)
 		})
 	}
 }
@@ -1497,7 +1465,7 @@ func TestCommands_RevokeAccessToken(t *testing.T) {
 			},
 			res{
 				nil,
-				caos_errs.IsErrorInvalidArgument,
+				zerrors.IsErrorInvalidArgument,
 			},
 		},
 		{
@@ -1515,7 +1483,11 @@ func TestCommands_RevokeAccessToken(t *testing.T) {
 								"refreshTokenID",
 								[]string{"clientID"},
 								[]string{"openid"},
+								[]string{"password"},
 								time.Now(),
+								time.Now(),
+								domain.TokenReasonAuthRequest,
+								nil,
 							),
 						),
 					),
@@ -1529,7 +1501,7 @@ func TestCommands_RevokeAccessToken(t *testing.T) {
 			},
 			res{
 				nil,
-				caos_errs.IsNotFound,
+				zerrors.IsNotFound,
 			},
 		},
 		{
@@ -1547,16 +1519,18 @@ func TestCommands_RevokeAccessToken(t *testing.T) {
 								"refreshTokenID",
 								[]string{"clientID"},
 								[]string{"openid"},
+								[]string{"password"},
+								time.Now(),
 								time.Now().Add(5*time.Hour),
+								domain.TokenReasonAuthRequest,
+								nil,
 							),
 						),
 					),
 					expectPush(
-						eventPusherToEvents(
-							user.NewUserTokenRemovedEvent(context.Background(),
-								&user.NewAggregate("userID", "orgID").Aggregate,
-								"tokenID",
-							),
+						user.NewUserTokenRemovedEvent(context.Background(),
+							&user.NewAggregate("userID", "orgID").Aggregate,
+							"tokenID",
 						),
 					),
 				),
@@ -1588,7 +1562,7 @@ func TestCommands_RevokeAccessToken(t *testing.T) {
 				t.Errorf("got wrong err: %v ", err)
 			}
 			if tt.res.err == nil {
-				assert.Equal(t, tt.res.want, got)
+				assertObjectDetails(t, tt.res.want, got)
 			}
 		})
 	}
@@ -1624,7 +1598,7 @@ func TestCommandSide_UserDomainClaimedSent(t *testing.T) {
 				resourceOwner: "org1",
 			},
 			res: res{
-				err: caos_errs.IsErrorInvalidArgument,
+				err: zerrors.IsErrorInvalidArgument,
 			},
 		},
 		{
@@ -1641,7 +1615,7 @@ func TestCommandSide_UserDomainClaimedSent(t *testing.T) {
 				resourceOwner: "org1",
 			},
 			res: res{
-				err: caos_errs.IsNotFound,
+				err: zerrors.IsNotFound,
 			},
 		},
 		{
@@ -1666,13 +1640,9 @@ func TestCommandSide_UserDomainClaimedSent(t *testing.T) {
 						),
 					),
 					expectPush(
-						[]*repository.Event{
-							eventFromEventPusher(
-								user.NewDomainClaimedSentEvent(context.Background(),
-									&user.NewAggregate("user1", "org1").Aggregate,
-								),
-							),
-						},
+						user.NewDomainClaimedSentEvent(context.Background(),
+							&user.NewAggregate("user1", "org1").Aggregate,
+						),
 					),
 				),
 			},
@@ -1741,6 +1711,7 @@ func TestExistsUser(t *testing.T) {
 							domain.GenderFemale,
 							"support@zitadel.com",
 							true,
+							"userAgentID",
 						),
 					}, nil
 				},
@@ -1788,6 +1759,7 @@ func TestExistsUser(t *testing.T) {
 							"name",
 							"description",
 							true,
+							domain.OIDCTokenTypeBearer,
 						),
 					}, nil
 				},
@@ -1809,6 +1781,7 @@ func TestExistsUser(t *testing.T) {
 							"name",
 							"description",
 							true,
+							domain.OIDCTokenTypeBearer,
 						),
 						user.NewUserRemovedEvent(
 							context.Background(),
@@ -1829,7 +1802,7 @@ func TestExistsUser(t *testing.T) {
 			name: "error durring filter",
 			args: args{
 				filter: func(_ context.Context, _ *eventstore.SearchQueryBuilder) ([]eventstore.Event, error) {
-					return nil, errors.ThrowInternal(nil, "USER-Drebn", "Errors.Internal")
+					return nil, zerrors.ThrowInternal(nil, "USER-Drebn", "Errors.Internal")
 				},
 				id:            "id",
 				resourceOwner: "ro",

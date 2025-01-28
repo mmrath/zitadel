@@ -8,17 +8,18 @@ import (
 	"regexp"
 	"testing"
 
-	errs "github.com/zitadel/zitadel/internal/errors"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 var (
-	orgMetadataQuery = `SELECT projections.org_metadata.creation_date,` +
-		` projections.org_metadata.change_date,` +
-		` projections.org_metadata.resource_owner,` +
-		` projections.org_metadata.sequence,` +
-		` projections.org_metadata.key,` +
-		` projections.org_metadata.value` +
-		` FROM projections.org_metadata`
+	orgMetadataQuery = `SELECT projections.org_metadata2.creation_date,` +
+		` projections.org_metadata2.change_date,` +
+		` projections.org_metadata2.resource_owner,` +
+		` projections.org_metadata2.sequence,` +
+		` projections.org_metadata2.key,` +
+		` projections.org_metadata2.value` +
+		` FROM projections.org_metadata2` +
+		` AS OF SYSTEM TIME '-1 ms'`
 	orgMetadataCols = []string{
 		"creation_date",
 		"change_date",
@@ -27,14 +28,15 @@ var (
 		"key",
 		"value",
 	}
-	orgMetadataListQuery = `SELECT projections.org_metadata.creation_date,` +
-		` projections.org_metadata.change_date,` +
-		` projections.org_metadata.resource_owner,` +
-		` projections.org_metadata.sequence,` +
-		` projections.org_metadata.key,` +
-		` projections.org_metadata.value,` +
+	orgMetadataListQuery = `SELECT projections.org_metadata2.creation_date,` +
+		` projections.org_metadata2.change_date,` +
+		` projections.org_metadata2.resource_owner,` +
+		` projections.org_metadata2.sequence,` +
+		` projections.org_metadata2.key,` +
+		` projections.org_metadata2.value,` +
 		` COUNT(*) OVER ()` +
-		` FROM projections.org_metadata`
+		` FROM projections.org_metadata2` +
+		` AS OF SYSTEM TIME '-1 ms'`
 	orgMetadataListCols = []string{
 		"creation_date",
 		"change_date",
@@ -61,13 +63,13 @@ func Test_OrgMetadataPrepares(t *testing.T) {
 			name:    "prepareOrgMetadataQuery no result",
 			prepare: prepareOrgMetadataQuery,
 			want: want{
-				sqlExpectations: mockQuery(
+				sqlExpectations: mockQueryScanErr(
 					regexp.QuoteMeta(orgMetadataQuery),
 					nil,
 					nil,
 				),
 				err: func(err error) (error, bool) {
-					if !errs.IsNotFound(err) {
+					if !zerrors.IsNotFound(err) {
 						return fmt.Errorf("err should be zitadel.NotFoundError got: %w", err), false
 					}
 					return nil, true
@@ -116,7 +118,7 @@ func Test_OrgMetadataPrepares(t *testing.T) {
 					return nil, true
 				},
 			},
-			object: nil,
+			object: (*OrgMetadata)(nil),
 		},
 		{
 			name:    "prepareOrgMetadataListQuery no result",
@@ -128,7 +130,7 @@ func Test_OrgMetadataPrepares(t *testing.T) {
 					nil,
 				),
 				err: func(err error) (error, bool) {
-					if !errs.IsNotFound(err) {
+					if !zerrors.IsNotFound(err) {
 						return fmt.Errorf("err should be zitadel.NotFoundError got: %w", err), false
 					}
 					return nil, true
@@ -237,12 +239,12 @@ func Test_OrgMetadataPrepares(t *testing.T) {
 					return nil, true
 				},
 			},
-			object: nil,
+			object: (*OrgMetadataList)(nil),
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assertPrepare(t, tt.prepare, tt.object, tt.want.sqlExpectations, tt.want.err)
+			assertPrepare(t, tt.prepare, tt.object, tt.want.sqlExpectations, tt.want.err, defaultPrepareArgs...)
 		})
 	}
 }

@@ -3,15 +3,19 @@ package query
 import (
 	"context"
 	"database/sql"
-	errs "errors"
+	"errors"
 	"time"
 
 	sq "github.com/Masterminds/squirrel"
+	"github.com/zitadel/logging"
 
 	"github.com/zitadel/zitadel/internal/api/authz"
+	"github.com/zitadel/zitadel/internal/api/call"
 	"github.com/zitadel/zitadel/internal/domain"
-	"github.com/zitadel/zitadel/internal/errors"
+	"github.com/zitadel/zitadel/internal/eventstore/handler/v2"
 	"github.com/zitadel/zitadel/internal/query/projection"
+	"github.com/zitadel/zitadel/internal/telemetry/tracing"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 type PrivacyPolicy struct {
@@ -22,9 +26,13 @@ type PrivacyPolicy struct {
 	ResourceOwner string
 	State         domain.PolicyState
 
-	TOSLink     string
-	PrivacyLink string
-	HelpLink    string
+	TOSLink        string
+	PrivacyLink    string
+	HelpLink       string
+	SupportEmail   domain.EmailAddress
+	DocsLink       string
+	CustomLink     string
+	CustomLinkText string
 
 	IsDefault bool
 }
@@ -70,6 +78,10 @@ var (
 		name:  projection.PrivacyPolicyHelpLinkCol,
 		table: privacyTable,
 	}
+	PrivacyColSupportEmail = Column{
+		name:  projection.PrivacyPolicySupportEmailCol,
+		table: privacyTable,
+	}
 	PrivacyColIsDefault = Column{
 		name:  projection.PrivacyPolicyIsDefaultCol,
 		table: privacyTable,
@@ -78,44 +90,71 @@ var (
 		name:  projection.PrivacyPolicyStateCol,
 		table: privacyTable,
 	}
+	PrivacyColOwnerRemoved = Column{
+		name:  projection.PrivacyPolicyOwnerRemovedCol,
+		table: privacyTable,
+	}
+	PrivacyColDocsLink = Column{
+		name:  projection.PrivacyPolicyDocsLinkCol,
+		table: privacyTable,
+	}
+	PrivacyColCustomLink = Column{
+		name:  projection.PrivacyPolicyCustomLinkCol,
+		table: privacyTable,
+	}
+	PrivacyColCustomLinkText = Column{
+		name:  projection.PrivacyPolicyCustomLinkTextCol,
+		table: privacyTable,
+	}
 )
 
-func (q *Queries) PrivacyPolicyByOrg(ctx context.Context, shouldTriggerBulk bool, orgID string) (*PrivacyPolicy, error) {
-	if shouldTriggerBulk {
-		projection.PrivacyPolicyProjection.Trigger(ctx)
-	}
+func (q *Queries) PrivacyPolicyByOrg(ctx context.Context, shouldTriggerBulk bool, orgID string, withOwnerRemoved bool) (policy *PrivacyPolicy, err error) {
+	ctx, span := tracing.NewSpan(ctx)
+	defer func() { span.EndWithError(err) }()
 
-	stmt, scan := preparePrivacyPolicyQuery()
+	if shouldTriggerBulk {
+		_, traceSpan := tracing.NewNamedSpan(ctx, "TriggerPrivacyPolicyProjection")
+		ctx, err = projection.PrivacyPolicyProjection.Trigger(ctx, handler.WithAwaitRunning())
+		logging.OnError(err).Debug("trigger failed")
+		traceSpan.EndWithError(err)
+	}
+	eq := sq.Eq{PrivacyColInstanceID.identifier(): authz.GetInstance(ctx).InstanceID()}
+	if !withOwnerRemoved {
+		eq[PrivacyColOwnerRemoved.identifier()] = false
+	}
+	stmt, scan := preparePrivacyPolicyQuery(ctx, q.client)
 	query, args, err := stmt.Where(
 		sq.And{
-			sq.Eq{
-				PrivacyColInstanceID.identifier(): authz.GetInstance(ctx).InstanceID(),
-			},
+			eq,
 			sq.Or{
-				sq.Eq{
-					PrivacyColID.identifier(): orgID,
-				},
-				sq.Eq{
-					PrivacyColID.identifier(): authz.GetInstance(ctx).InstanceID(),
-				},
+				sq.Eq{PrivacyColID.identifier(): orgID},
+				sq.Eq{PrivacyColID.identifier(): authz.GetInstance(ctx).InstanceID()},
 			},
 		}).
-		OrderBy(PrivacyColIsDefault.identifier()).
-		Limit(1).ToSql()
+		OrderBy(PrivacyColIsDefault.identifier()).Limit(1).ToSql()
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "QUERY-UXuPI", "Errors.Query.SQLStatement")
+		return nil, zerrors.ThrowInternal(err, "QUERY-UXuPI", "Errors.Query.SQLStatement")
 	}
 
-	row := q.client.QueryRowContext(ctx, query, args...)
-	return scan(row)
+	err = q.client.QueryRowContext(ctx, func(row *sql.Row) error {
+		policy, err = scan(row)
+		return err
+	}, query, args...)
+	return policy, err
 }
 
-func (q *Queries) DefaultPrivacyPolicy(ctx context.Context, shouldTriggerBulk bool) (*PrivacyPolicy, error) {
+func (q *Queries) DefaultPrivacyPolicy(ctx context.Context, shouldTriggerBulk bool) (policy *PrivacyPolicy, err error) {
+	ctx, span := tracing.NewSpan(ctx)
+	defer func() { span.EndWithError(err) }()
+
 	if shouldTriggerBulk {
-		projection.PrivacyPolicyProjection.Trigger(ctx)
+		_, traceSpan := tracing.NewNamedSpan(ctx, "TriggerPrivacyPolicyProjection")
+		ctx, err = projection.PrivacyPolicyProjection.Trigger(ctx, handler.WithAwaitRunning())
+		logging.OnError(err).Debug("trigger failed")
+		traceSpan.EndWithError(err)
 	}
 
-	stmt, scan := preparePrivacyPolicyQuery()
+	stmt, scan := preparePrivacyPolicyQuery(ctx, q.client)
 	query, args, err := stmt.Where(sq.Eq{
 		PrivacyColID.identifier():         authz.GetInstance(ctx).InstanceID(),
 		PrivacyColInstanceID.identifier(): authz.GetInstance(ctx).InstanceID(),
@@ -123,14 +162,17 @@ func (q *Queries) DefaultPrivacyPolicy(ctx context.Context, shouldTriggerBulk bo
 		OrderBy(PrivacyColIsDefault.identifier()).
 		Limit(1).ToSql()
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "QUERY-LkFZ7", "Errors.Query.SQLStatement")
+		return nil, zerrors.ThrowInternal(err, "QUERY-LkFZ7", "Errors.Query.SQLStatement")
 	}
 
-	row := q.client.QueryRowContext(ctx, query, args...)
-	return scan(row)
+	err = q.client.QueryRowContext(ctx, func(row *sql.Row) error {
+		policy, err = scan(row)
+		return err
+	}, query, args...)
+	return policy, err
 }
 
-func preparePrivacyPolicyQuery() (sq.SelectBuilder, func(*sql.Row) (*PrivacyPolicy, error)) {
+func preparePrivacyPolicyQuery(ctx context.Context, db prepareDatabase) (sq.SelectBuilder, func(*sql.Row) (*PrivacyPolicy, error)) {
 	return sq.Select(
 			PrivacyColID.identifier(),
 			PrivacyColSequence.identifier(),
@@ -140,10 +182,15 @@ func preparePrivacyPolicyQuery() (sq.SelectBuilder, func(*sql.Row) (*PrivacyPoli
 			PrivacyColPrivacyLink.identifier(),
 			PrivacyColTOSLink.identifier(),
 			PrivacyColHelpLink.identifier(),
+			PrivacyColSupportEmail.identifier(),
+			PrivacyColDocsLink.identifier(),
+			PrivacyColCustomLink.identifier(),
+			PrivacyColCustomLinkText.identifier(),
 			PrivacyColIsDefault.identifier(),
 			PrivacyColState.identifier(),
 		).
-			From(privacyTable.identifier()).PlaceholderFormat(sq.Dollar),
+			From(privacyTable.identifier() + db.Timetravel(call.Took(ctx))).
+			PlaceholderFormat(sq.Dollar),
 		func(row *sql.Row) (*PrivacyPolicy, error) {
 			policy := new(PrivacyPolicy)
 			err := row.Scan(
@@ -155,14 +202,18 @@ func preparePrivacyPolicyQuery() (sq.SelectBuilder, func(*sql.Row) (*PrivacyPoli
 				&policy.PrivacyLink,
 				&policy.TOSLink,
 				&policy.HelpLink,
+				&policy.SupportEmail,
+				&policy.DocsLink,
+				&policy.CustomLink,
+				&policy.CustomLinkText,
 				&policy.IsDefault,
 				&policy.State,
 			)
 			if err != nil {
-				if errs.Is(err, sql.ErrNoRows) {
-					return nil, errors.ThrowNotFound(err, "QUERY-vNMHL", "Errors.PrivacyPolicy.NotFound")
+				if errors.Is(err, sql.ErrNoRows) {
+					return nil, zerrors.ThrowNotFound(err, "QUERY-vNMHL", "Errors.PrivacyPolicy.NotFound")
 				}
-				return nil, errors.ThrowInternal(err, "QUERY-csrdo", "Errors.Internal")
+				return nil, zerrors.ThrowInternal(err, "QUERY-csrdo", "Errors.Internal")
 			}
 			return policy, nil
 		}
@@ -170,9 +221,13 @@ func preparePrivacyPolicyQuery() (sq.SelectBuilder, func(*sql.Row) (*PrivacyPoli
 
 func (p *PrivacyPolicy) ToDomain() *domain.PrivacyPolicy {
 	return &domain.PrivacyPolicy{
-		TOSLink:     p.TOSLink,
-		PrivacyLink: p.PrivacyLink,
-		HelpLink:    p.HelpLink,
-		Default:     p.IsDefault,
+		TOSLink:        p.TOSLink,
+		PrivacyLink:    p.PrivacyLink,
+		HelpLink:       p.HelpLink,
+		SupportEmail:   p.SupportEmail,
+		Default:        p.IsDefault,
+		DocsLink:       p.DocsLink,
+		CustomLink:     p.CustomLink,
+		CustomLinkText: p.CustomLinkText,
 	}
 }

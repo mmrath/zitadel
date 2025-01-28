@@ -17,7 +17,7 @@ import {
 } from '@angular/core';
 import { FormGroupDirective, NgControl, NgForm } from '@angular/forms';
 import { CanUpdateErrorState, ErrorStateMatcher, mixinErrorState } from '@angular/material/core';
-import { MAT_FORM_FIELD, MatFormField, MatFormFieldControl } from '@angular/material/form-field';
+import { MatFormField, MatFormFieldControl, MAT_FORM_FIELD } from '@angular/material/form-field';
 import { getMatInputUnsupportedTypeError, MAT_INPUT_VALUE_ACCESSOR } from '@angular/material/input';
 import { Subject } from 'rxjs';
 
@@ -192,7 +192,7 @@ export class InputDirective
   protected _type: string = 'text';
 
   /** An object used to control when error messages are shown. */
-  @Input() errorStateMatcher!: ErrorStateMatcher;
+  @Input() override errorStateMatcher!: ErrorStateMatcher;
 
   /**
    * Implemented as part of MatFormFieldControl.
@@ -234,7 +234,7 @@ export class InputDirective
     protected _elementRef: ElementRef<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>,
     protected _platform: Platform,
     /** @docs-private */
-    @Optional() @Self() public ngControl: NgControl,
+    @Optional() @Self() public override ngControl: NgControl,
     @Optional() _parentForm: NgForm,
     @Optional() _parentFormGroup: FormGroupDirective,
     _defaultErrorStateMatcher: ErrorStateMatcher,
@@ -363,12 +363,18 @@ export class InputDirective
   private _dirtyCheckPlaceholder(): void {
     // If we're hiding the native placeholder, it should also be cleared from the DOM, otherwise
     // screen readers will read it out twice: once from the label and once from the attribute.
-    const placeholder = this._formField?._hideControlPlaceholder?.() ? null : this.placeholder;
+    const placeholder = this._getPlaceholder();
+
     if (placeholder !== this._previousPlaceholder) {
       const element = this._elementRef.nativeElement;
       this._previousPlaceholder = placeholder;
       placeholder ? element.setAttribute('placeholder', placeholder) : element.removeAttribute('placeholder');
     }
+  }
+
+  /** Gets the current placeholder of the form field. */
+  protected _getPlaceholder(): string | null {
+    return this.placeholder || null;
   }
 
   /** Does some manual dirty checking on the native input `value` property. */

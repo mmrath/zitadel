@@ -3,18 +3,19 @@ package query
 import (
 	"context"
 	"database/sql"
-	errs "errors"
+	"errors"
 	"time"
 
 	sq "github.com/Masterminds/squirrel"
+	"github.com/zitadel/logging"
 
 	"github.com/zitadel/zitadel/internal/api/authz"
-	"github.com/zitadel/zitadel/internal/domain"
-
+	"github.com/zitadel/zitadel/internal/api/call"
 	"github.com/zitadel/zitadel/internal/crypto"
+	"github.com/zitadel/zitadel/internal/domain"
 	"github.com/zitadel/zitadel/internal/query/projection"
-
-	"github.com/zitadel/zitadel/internal/errors"
+	"github.com/zitadel/zitadel/internal/telemetry/tracing"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 var (
@@ -102,7 +103,10 @@ type SecretGeneratorSearchQueries struct {
 	Queries []SearchQuery
 }
 
-func (q *Queries) InitEncryptionGenerator(ctx context.Context, generatorType domain.SecretGeneratorType, algorithm crypto.EncryptionAlgorithm) (crypto.Generator, error) {
+func (q *Queries) InitEncryptionGenerator(ctx context.Context, generatorType domain.SecretGeneratorType, algorithm crypto.EncryptionAlgorithm) (_ crypto.Generator, err error) {
+	ctx, span := tracing.NewSpan(ctx)
+	defer func() { span.EndWithError(err) }()
+
 	generatorConfig, err := q.SecretGeneratorByType(ctx, generatorType)
 	if err != nil {
 		return nil, err
@@ -118,55 +122,49 @@ func (q *Queries) InitEncryptionGenerator(ctx context.Context, generatorType dom
 	return crypto.NewEncryptionGenerator(cryptoConfig, algorithm), nil
 }
 
-func (q *Queries) InitHashGenerator(ctx context.Context, generatorType domain.SecretGeneratorType, algorithm crypto.HashAlgorithm) (crypto.Generator, error) {
-	generatorConfig, err := q.SecretGeneratorByType(ctx, generatorType)
-	if err != nil {
-		return nil, err
-	}
-	cryptoConfig := crypto.GeneratorConfig{
-		Length:              generatorConfig.Length,
-		Expiry:              generatorConfig.Expiry,
-		IncludeLowerLetters: generatorConfig.IncludeLowerLetters,
-		IncludeUpperLetters: generatorConfig.IncludeUpperLetters,
-		IncludeDigits:       generatorConfig.IncludeDigits,
-		IncludeSymbols:      generatorConfig.IncludeSymbols,
-	}
-	return crypto.NewHashGenerator(cryptoConfig, algorithm), nil
-}
+func (q *Queries) SecretGeneratorByType(ctx context.Context, generatorType domain.SecretGeneratorType) (generator *SecretGenerator, err error) {
+	ctx, span := tracing.NewSpan(ctx)
+	defer func() { span.EndWithError(err) }()
 
-func (q *Queries) SecretGeneratorByType(ctx context.Context, generatorType domain.SecretGeneratorType) (*SecretGenerator, error) {
-	stmt, scan := prepareSecretGeneratorQuery()
+	instanceID := authz.GetInstance(ctx).InstanceID()
+	stmt, scan := prepareSecretGeneratorQuery(ctx, q.client)
 	query, args, err := stmt.Where(sq.Eq{
 		SecretGeneratorColumnGeneratorType.identifier(): generatorType,
-		SecretGeneratorColumnInstanceID.identifier():    authz.GetInstance(ctx).InstanceID(),
+		SecretGeneratorColumnInstanceID.identifier():    instanceID,
 	}).ToSql()
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "QUERY-3k99f", "Errors.Query.SQLStatment")
+		return nil, zerrors.ThrowInternal(err, "QUERY-3k99f", "Errors.Query.SQLStatment")
 	}
 
-	row := q.client.QueryRowContext(ctx, query, args...)
-	return scan(row)
+	err = q.client.QueryRowContext(ctx, func(row *sql.Row) error {
+		generator, err = scan(row)
+		return err
+	}, query, args...)
+	logging.OnError(err).WithField("type", generatorType).WithField("instance_id", instanceID).Error("secret generator by type")
+	return generator, err
 }
 
 func (q *Queries) SearchSecretGenerators(ctx context.Context, queries *SecretGeneratorSearchQueries) (secretGenerators *SecretGenerators, err error) {
-	query, scan := prepareSecretGeneratorsQuery()
+	ctx, span := tracing.NewSpan(ctx)
+	defer func() { span.EndWithError(err) }()
+
+	query, scan := prepareSecretGeneratorsQuery(ctx, q.client)
 	stmt, args, err := queries.toQuery(query).
 		Where(sq.Eq{
 			SecretGeneratorColumnInstanceID.identifier(): authz.GetInstance(ctx).InstanceID(),
 		}).ToSql()
 	if err != nil {
-		return nil, errors.ThrowInvalidArgument(err, "QUERY-sn9lw", "Errors.Query.InvalidRequest")
+		return nil, zerrors.ThrowInvalidArgument(err, "QUERY-sn9lw", "Errors.Query.InvalidRequest")
 	}
 
-	rows, err := q.client.QueryContext(ctx, stmt, args...)
+	err = q.client.QueryContext(ctx, func(rows *sql.Rows) error {
+		secretGenerators, err = scan(rows)
+		return err
+	}, stmt, args...)
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "QUERY-4miii", "Errors.Internal")
+		return nil, zerrors.ThrowInternal(err, "QUERY-4miii", "Errors.Internal")
 	}
-	secretGenerators, err = scan(rows)
-	if err != nil {
-		return nil, err
-	}
-	secretGenerators.LatestSequence, err = q.latestSequence(ctx, secretGeneratorsTable)
+	secretGenerators.State, err = q.latestState(ctx, secretGeneratorsTable)
 	return secretGenerators, err
 }
 
@@ -182,7 +180,7 @@ func NewSecretGeneratorTypeSearchQuery(value int32) (SearchQuery, error) {
 	return NewNumberQuery(SecretGeneratorColumnGeneratorType, value, NumberEquals)
 }
 
-func prepareSecretGeneratorQuery() (sq.SelectBuilder, func(*sql.Row) (*SecretGenerator, error)) {
+func prepareSecretGeneratorQuery(ctx context.Context, db prepareDatabase) (sq.SelectBuilder, func(*sql.Row) (*SecretGenerator, error)) {
 	return sq.Select(
 			SecretGeneratorColumnAggregateID.identifier(),
 			SecretGeneratorColumnGeneratorType.identifier(),
@@ -196,7 +194,8 @@ func prepareSecretGeneratorQuery() (sq.SelectBuilder, func(*sql.Row) (*SecretGen
 			SecretGeneratorColumnIncludeUpperLetters.identifier(),
 			SecretGeneratorColumnIncludeDigits.identifier(),
 			SecretGeneratorColumnIncludeSymbols.identifier()).
-			From(secretGeneratorsTable.identifier()).PlaceholderFormat(sq.Dollar),
+			From(secretGeneratorsTable.identifier() + db.Timetravel(call.Took(ctx))).
+			PlaceholderFormat(sq.Dollar),
 		func(row *sql.Row) (*SecretGenerator, error) {
 			secretGenerator := new(SecretGenerator)
 			err := row.Scan(
@@ -214,16 +213,16 @@ func prepareSecretGeneratorQuery() (sq.SelectBuilder, func(*sql.Row) (*SecretGen
 				&secretGenerator.IncludeSymbols,
 			)
 			if err != nil {
-				if errs.Is(err, sql.ErrNoRows) {
-					return nil, errors.ThrowNotFound(err, "QUERY-m9wff", "Errors.SecretGenerator.NotFound")
+				if errors.Is(err, sql.ErrNoRows) {
+					return nil, zerrors.ThrowNotFound(err, "QUERY-m9wff", "Errors.SecretGenerator.NotFound")
 				}
-				return nil, errors.ThrowInternal(err, "QUERY-2k99d", "Errors.Internal")
+				return nil, zerrors.ThrowInternal(err, "QUERY-2k99d", "Errors.Internal")
 			}
 			return secretGenerator, nil
 		}
 }
 
-func prepareSecretGeneratorsQuery() (sq.SelectBuilder, func(*sql.Rows) (*SecretGenerators, error)) {
+func prepareSecretGeneratorsQuery(ctx context.Context, db prepareDatabase) (sq.SelectBuilder, func(*sql.Rows) (*SecretGenerators, error)) {
 	return sq.Select(
 			SecretGeneratorColumnAggregateID.identifier(),
 			SecretGeneratorColumnGeneratorType.identifier(),
@@ -238,7 +237,8 @@ func prepareSecretGeneratorsQuery() (sq.SelectBuilder, func(*sql.Rows) (*SecretG
 			SecretGeneratorColumnIncludeDigits.identifier(),
 			SecretGeneratorColumnIncludeSymbols.identifier(),
 			countColumn.identifier()).
-			From(secretGeneratorsTable.identifier()).PlaceholderFormat(sq.Dollar),
+			From(secretGeneratorsTable.identifier() + db.Timetravel(call.Took(ctx))).
+			PlaceholderFormat(sq.Dollar),
 		func(rows *sql.Rows) (*SecretGenerators, error) {
 			secretGenerators := make([]*SecretGenerator, 0)
 			var count uint64
@@ -266,7 +266,7 @@ func prepareSecretGeneratorsQuery() (sq.SelectBuilder, func(*sql.Rows) (*SecretG
 			}
 
 			if err := rows.Close(); err != nil {
-				return nil, errors.ThrowInternal(err, "QUERY-em9fs", "Errors.Query.CloseRows")
+				return nil, zerrors.ThrowInternal(err, "QUERY-em9fs", "Errors.Query.CloseRows")
 			}
 
 			return &SecretGenerators{

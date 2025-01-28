@@ -1,6 +1,8 @@
 package policy
 
 import (
+	"time"
+
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -18,6 +20,7 @@ func ModelLoginPolicyToPb(policy *query.LoginPolicy) *policy_pb.LoginPolicy {
 		AllowRegister:              policy.AllowRegister,
 		AllowExternalIdp:           policy.AllowExternalIDPs,
 		ForceMfa:                   policy.ForceMFA,
+		ForceMfaLocalOnly:          policy.ForceMFALocalOnly,
 		PasswordlessType:           ModelPasswordlessTypeToPb(policy.PasswordlessType),
 		HidePasswordReset:          policy.HidePasswordReset,
 		IgnoreUnknownUsernames:     policy.IgnoreUnknownUsernames,
@@ -25,11 +28,11 @@ func ModelLoginPolicyToPb(policy *query.LoginPolicy) *policy_pb.LoginPolicy {
 		DisableLoginWithEmail:      policy.DisableLoginWithEmail,
 		DisableLoginWithPhone:      policy.DisableLoginWithPhone,
 		DefaultRedirectUri:         policy.DefaultRedirectURI,
-		PasswordCheckLifetime:      durationpb.New(policy.PasswordCheckLifetime),
-		ExternalLoginCheckLifetime: durationpb.New(policy.ExternalLoginCheckLifetime),
-		MfaInitSkipLifetime:        durationpb.New(policy.MFAInitSkipLifetime),
-		SecondFactorCheckLifetime:  durationpb.New(policy.SecondFactorCheckLifetime),
-		MultiFactorCheckLifetime:   durationpb.New(policy.MultiFactorCheckLifetime),
+		PasswordCheckLifetime:      durationpb.New(time.Duration(policy.PasswordCheckLifetime)),
+		ExternalLoginCheckLifetime: durationpb.New(time.Duration(policy.ExternalLoginCheckLifetime)),
+		MfaInitSkipLifetime:        durationpb.New(time.Duration(policy.MFAInitSkipLifetime)),
+		SecondFactorCheckLifetime:  durationpb.New(time.Duration(policy.SecondFactorCheckLifetime)),
+		MultiFactorCheckLifetime:   durationpb.New(time.Duration(policy.MultiFactorCheckLifetime)),
 		SecondFactors:              ModelSecondFactorTypesToPb(policy.SecondFactors),
 		MultiFactors:               ModelMultiFactorTypesToPb(policy.MultiFactors),
 		Idps:                       idp_grpc.IDPLoginPolicyLinksToPb(policy.IDPLinks),

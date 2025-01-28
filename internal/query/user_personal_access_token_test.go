@@ -10,20 +10,21 @@ import (
 	"time"
 
 	"github.com/zitadel/zitadel/internal/database"
-	errs "github.com/zitadel/zitadel/internal/errors"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 var (
 	personalAccessTokenStmt = regexp.QuoteMeta(
-		"SELECT projections.personal_access_tokens2.id," +
-			" projections.personal_access_tokens2.creation_date," +
-			" projections.personal_access_tokens2.change_date," +
-			" projections.personal_access_tokens2.resource_owner," +
-			" projections.personal_access_tokens2.sequence," +
-			" projections.personal_access_tokens2.user_id," +
-			" projections.personal_access_tokens2.expiration," +
-			" projections.personal_access_tokens2.scopes" +
-			" FROM projections.personal_access_tokens2")
+		"SELECT projections.personal_access_tokens3.id," +
+			" projections.personal_access_tokens3.creation_date," +
+			" projections.personal_access_tokens3.change_date," +
+			" projections.personal_access_tokens3.resource_owner," +
+			" projections.personal_access_tokens3.sequence," +
+			" projections.personal_access_tokens3.user_id," +
+			" projections.personal_access_tokens3.expiration," +
+			" projections.personal_access_tokens3.scopes" +
+			" FROM projections.personal_access_tokens3" +
+			` AS OF SYSTEM TIME '-1 ms'`)
 	personalAccessTokenCols = []string{
 		"id",
 		"creation_date",
@@ -35,16 +36,17 @@ var (
 		"scopes",
 	}
 	personalAccessTokensStmt = regexp.QuoteMeta(
-		"SELECT projections.personal_access_tokens2.id," +
-			" projections.personal_access_tokens2.creation_date," +
-			" projections.personal_access_tokens2.change_date," +
-			" projections.personal_access_tokens2.resource_owner," +
-			" projections.personal_access_tokens2.sequence," +
-			" projections.personal_access_tokens2.user_id," +
-			" projections.personal_access_tokens2.expiration," +
-			" projections.personal_access_tokens2.scopes," +
+		"SELECT projections.personal_access_tokens3.id," +
+			" projections.personal_access_tokens3.creation_date," +
+			" projections.personal_access_tokens3.change_date," +
+			" projections.personal_access_tokens3.resource_owner," +
+			" projections.personal_access_tokens3.sequence," +
+			" projections.personal_access_tokens3.user_id," +
+			" projections.personal_access_tokens3.expiration," +
+			" projections.personal_access_tokens3.scopes," +
 			" COUNT(*) OVER ()" +
-			" FROM projections.personal_access_tokens2")
+			" FROM projections.personal_access_tokens3" +
+			" AS OF SYSTEM TIME '-1 ms'")
 	personalAccessTokensCols = []string{
 		"id",
 		"creation_date",
@@ -73,13 +75,13 @@ func Test_PersonalAccessTokenPrepares(t *testing.T) {
 			name:    "preparePersonalAccessTokenQuery no result",
 			prepare: preparePersonalAccessTokenQuery,
 			want: want{
-				sqlExpectations: mockQuery(
+				sqlExpectations: mockQueryScanErr(
 					personalAccessTokenStmt,
 					nil,
 					nil,
 				),
 				err: func(err error) (error, bool) {
-					if !errs.IsNotFound(err) {
+					if !zerrors.IsNotFound(err) {
 						return fmt.Errorf("err should be zitadel.NotFoundError got: %w", err), false
 					}
 					return nil, true
@@ -102,7 +104,7 @@ func Test_PersonalAccessTokenPrepares(t *testing.T) {
 						uint64(20211202),
 						"user-id",
 						time.Date(9999, 12, 31, 23, 59, 59, 0, time.UTC),
-						database.StringArray{"openid"},
+						database.TextArray[string]{"openid"},
 					},
 				),
 			},
@@ -114,7 +116,7 @@ func Test_PersonalAccessTokenPrepares(t *testing.T) {
 				Sequence:      20211202,
 				UserID:        "user-id",
 				Expiration:    time.Date(9999, 12, 31, 23, 59, 59, 0, time.UTC),
-				Scopes:        database.StringArray{"openid"},
+				Scopes:        database.TextArray[string]{"openid"},
 			},
 		},
 		{
@@ -132,7 +134,7 @@ func Test_PersonalAccessTokenPrepares(t *testing.T) {
 					return nil, true
 				},
 			},
-			object: nil,
+			object: (*PersonalAccessToken)(nil),
 		},
 		{
 			name:    "preparePersonalAccessTokensQuery no result",
@@ -162,7 +164,7 @@ func Test_PersonalAccessTokenPrepares(t *testing.T) {
 							uint64(20211202),
 							"user-id",
 							time.Date(9999, 12, 31, 23, 59, 59, 0, time.UTC),
-							database.StringArray{"openid"},
+							database.TextArray[string]{"openid"},
 						},
 					},
 				),
@@ -180,7 +182,7 @@ func Test_PersonalAccessTokenPrepares(t *testing.T) {
 						Sequence:      20211202,
 						UserID:        "user-id",
 						Expiration:    time.Date(9999, 12, 31, 23, 59, 59, 0, time.UTC),
-						Scopes:        database.StringArray{"openid"},
+						Scopes:        database.TextArray[string]{"openid"},
 					},
 				},
 			},
@@ -201,7 +203,7 @@ func Test_PersonalAccessTokenPrepares(t *testing.T) {
 							uint64(20211202),
 							"user-id",
 							time.Date(9999, 12, 31, 23, 59, 59, 0, time.UTC),
-							database.StringArray{"openid"},
+							database.TextArray[string]{"openid"},
 						},
 						{
 							"token-id2",
@@ -211,7 +213,7 @@ func Test_PersonalAccessTokenPrepares(t *testing.T) {
 							uint64(20211202),
 							"user-id",
 							time.Date(9999, 12, 31, 23, 59, 59, 0, time.UTC),
-							database.StringArray{"openid"},
+							database.TextArray[string]{"openid"},
 						},
 					},
 				),
@@ -229,7 +231,7 @@ func Test_PersonalAccessTokenPrepares(t *testing.T) {
 						Sequence:      20211202,
 						UserID:        "user-id",
 						Expiration:    time.Date(9999, 12, 31, 23, 59, 59, 0, time.UTC),
-						Scopes:        database.StringArray{"openid"},
+						Scopes:        database.TextArray[string]{"openid"},
 					},
 					{
 						ID:            "token-id2",
@@ -239,7 +241,7 @@ func Test_PersonalAccessTokenPrepares(t *testing.T) {
 						Sequence:      20211202,
 						UserID:        "user-id",
 						Expiration:    time.Date(9999, 12, 31, 23, 59, 59, 0, time.UTC),
-						Scopes:        database.StringArray{"openid"},
+						Scopes:        database.TextArray[string]{"openid"},
 					},
 				},
 			},
@@ -259,12 +261,12 @@ func Test_PersonalAccessTokenPrepares(t *testing.T) {
 					return nil, true
 				},
 			},
-			object: nil,
+			object: (*PersonalAccessTokens)(nil),
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assertPrepare(t, tt.prepare, tt.object, tt.want.sqlExpectations, tt.want.err)
+			assertPrepare(t, tt.prepare, tt.object, tt.want.sqlExpectations, tt.want.err, defaultPrepareArgs...)
 		})
 	}
 }

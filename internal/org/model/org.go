@@ -1,10 +1,10 @@
 package model
 
 import (
-	"strings"
-
+	"github.com/zitadel/zitadel/internal/domain"
 	es_models "github.com/zitadel/zitadel/internal/eventstore/v1/models"
 	iam_model "github.com/zitadel/zitadel/internal/iam/model"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 type Org struct {
@@ -37,19 +37,16 @@ func (o *Org) GetDomain(domain *OrgDomain) (int, *OrgDomain) {
 	return -1, nil
 }
 
-func (o *Org) GetPrimaryDomain() *OrgDomain {
+func (o *Org) GetPrimaryDomain() (string, error) {
 	for _, d := range o.Domains {
 		if d.Primary {
-			return d
+			return d.Domain, nil
 		}
 	}
-	return nil
-}
-
-func (o *Org) nameForDomain(iamDomain string) string {
-	return strings.ToLower(strings.ReplaceAll(o.Name, " ", "-") + "." + iamDomain)
+	return "", zerrors.ThrowInternalf(nil, "ORG-Dertg", "no primary domain found for org: %s (instanceID: %s)", o.AggregateID, o.InstanceID)
 }
 
 func (o *Org) AddIAMDomain(iamDomain string) {
-	o.Domains = append(o.Domains, &OrgDomain{Domain: o.nameForDomain(iamDomain), Verified: true, Primary: true})
+	orgDomain, _ := domain.NewIAMDomainName(o.Name, iamDomain)
+	o.Domains = append(o.Domains, &OrgDomain{Domain: orgDomain, Verified: true, Primary: true})
 }

@@ -16,11 +16,13 @@ import { InfoSectionModule } from 'src/app/modules/info-section/info-section.mod
 import { InputModule } from 'src/app/modules/input/input.module';
 import { PasswordComplexityViewModule } from 'src/app/modules/password-complexity-view/password-complexity-view.module';
 
+import { CountryCallingCodesService } from 'src/app/services/country-calling-codes.service';
 import { UserCreateRoutingModule } from './user-create-routing.module';
 import { UserCreateComponent } from './user-create.component';
 
 @NgModule({
   declarations: [UserCreateComponent],
+  providers: [CountryCallingCodesService],
   imports: [
     UserCreateRoutingModule,
     CommonModule,
@@ -42,4 +44,4 @@ import { UserCreateComponent } from './user-create.component';
     MatRippleModule,
   ],
 })
-export class UserCreateModule {}
+export default class UserCreateModule {}

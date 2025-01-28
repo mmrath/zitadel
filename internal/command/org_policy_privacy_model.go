@@ -3,8 +3,8 @@ package command
 import (
 	"context"
 
+	"github.com/zitadel/zitadel/internal/domain"
 	"github.com/zitadel/zitadel/internal/eventstore"
-
 	"github.com/zitadel/zitadel/internal/repository/org"
 	"github.com/zitadel/zitadel/internal/repository/policy"
 )
@@ -59,6 +59,8 @@ func (wm *OrgPrivacyPolicyWriteModel) NewChangedEvent(
 	tosLink,
 	privacyLink,
 	helpLink string,
+	supportEmail domain.EmailAddress,
+	docsLink, customLink, customLinkText string,
 ) (*org.PrivacyPolicyChangedEvent, bool) {
 
 	changes := make([]policy.PrivacyPolicyChanges, 0)
@@ -70,6 +72,18 @@ func (wm *OrgPrivacyPolicyWriteModel) NewChangedEvent(
 	}
 	if wm.HelpLink != helpLink {
 		changes = append(changes, policy.ChangeHelpLink(helpLink))
+	}
+	if wm.SupportEmail != supportEmail {
+		changes = append(changes, policy.ChangeSupportEmail(supportEmail))
+	}
+	if wm.DocsLink != docsLink {
+		changes = append(changes, policy.ChangeDocsLink(docsLink))
+	}
+	if wm.CustomLink != customLink {
+		changes = append(changes, policy.ChangeCustomLink(customLink))
+	}
+	if wm.CustomLinkText != customLinkText {
+		changes = append(changes, policy.ChangeCustomLinkText(customLinkText))
 	}
 	if len(changes) == 0 {
 		return nil, false

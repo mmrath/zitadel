@@ -68,10 +68,64 @@ func SetVerifyPhoneCustomTextToDomain(msg *admin_pb.SetDefaultVerifyPhoneMessage
 	}
 }
 
+func SetVerifySMSOTPCustomTextToDomain(msg *admin_pb.SetDefaultVerifySMSOTPMessageTextRequest) *domain.CustomMessageText {
+	langTag := language.Make(msg.Language)
+	return &domain.CustomMessageText{
+		MessageTextType: domain.VerifySMSOTPMessageType,
+		Language:        langTag,
+		Text:            msg.Text,
+	}
+}
+
+func SetVerifyEmailOTPCustomTextToDomain(msg *admin_pb.SetDefaultVerifyEmailOTPMessageTextRequest) *domain.CustomMessageText {
+	langTag := language.Make(msg.Language)
+	return &domain.CustomMessageText{
+		MessageTextType: domain.VerifyEmailOTPMessageType,
+		Language:        langTag,
+		Title:           msg.Title,
+		PreHeader:       msg.PreHeader,
+		Subject:         msg.Subject,
+		Greeting:        msg.Greeting,
+		Text:            msg.Text,
+		ButtonText:      msg.ButtonText,
+		FooterText:      msg.FooterText,
+	}
+}
+
 func SetDomainClaimedCustomTextToDomain(msg *admin_pb.SetDefaultDomainClaimedMessageTextRequest) *domain.CustomMessageText {
 	langTag := language.Make(msg.Language)
 	return &domain.CustomMessageText{
 		MessageTextType: domain.DomainClaimedMessageType,
+		Language:        langTag,
+		Title:           msg.Title,
+		PreHeader:       msg.PreHeader,
+		Subject:         msg.Subject,
+		Greeting:        msg.Greeting,
+		Text:            msg.Text,
+		ButtonText:      msg.ButtonText,
+		FooterText:      msg.FooterText,
+	}
+}
+
+func SetPasswordChangeCustomTextToDomain(msg *admin_pb.SetDefaultPasswordChangeMessageTextRequest) *domain.CustomMessageText {
+	langTag := language.Make(msg.Language)
+	return &domain.CustomMessageText{
+		MessageTextType: domain.PasswordChangeMessageType,
+		Language:        langTag,
+		Title:           msg.Title,
+		PreHeader:       msg.PreHeader,
+		Subject:         msg.Subject,
+		Greeting:        msg.Greeting,
+		Text:            msg.Text,
+		ButtonText:      msg.ButtonText,
+		FooterText:      msg.FooterText,
+	}
+}
+
+func SetInviteUserCustomTextToDomain(msg *admin_pb.SetDefaultInviteUserMessageTextRequest) *domain.CustomMessageText {
+	langTag := language.Make(msg.Language)
+	return &domain.CustomMessageText{
+		MessageTextType: domain.InviteUserMessageType,
 		Language:        langTag,
 		Title:           msg.Title,
 		PreHeader:       msg.PreHeader,
@@ -134,7 +188,7 @@ func SetLoginTextToDomain(req *admin_pb.SetCustomLoginTextsRequest) *domain.Cust
 	result.ExternalRegistrationUserOverview = text.ExternalRegistrationUserOverviewScreenTextPbToDomain(req.ExternalRegistrationUserOverviewText)
 	result.RegistrationOrg = text.RegistrationOrgScreenTextPbToDomain(req.RegistrationOrgText)
 	result.LinkingUsersDone = text.LinkingUserDoneScreenTextPbToDomain(req.LinkingUserDoneText)
-	result.ExternalNotFoundOption = text.ExternalUserNotFoundScreenTextPbToDomain(req.ExternalUserNotFoundText)
+	result.ExternalNotFound = text.ExternalUserNotFoundScreenTextPbToDomain(req.ExternalUserNotFoundText)
 	result.LoginSuccess = text.SuccessLoginScreenTextPbToDomain(req.SuccessLoginText)
 	result.LogoutDone = text.LogoutDoneScreenTextPbToDomain(req.LogoutText)
 	result.Footer = text.FooterTextPbToDomain(req.FooterText)

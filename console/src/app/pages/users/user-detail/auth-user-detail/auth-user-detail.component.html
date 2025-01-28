@@ -8,16 +8,23 @@
   (backRouterLink)="(['/'])"
 >
   <span *ngIf="!loading && !user">{{ 'USER.PAGES.NOUSER' | translate }}</span>
-  <cnsl-info-row topContent *ngIf="user" [user]="user"></cnsl-info-row>
+  <cnsl-info-row topContent *ngIf="user" [user]="user" [loginPolicy]="loginPolicy"></cnsl-info-row>
 </cnsl-top-view>
 
 <div *ngIf="loading" class="max-width-container">
-  <mat-progress-spinner diameter="25" color="primary" mode="indeterminate"></mat-progress-spinner>
+  <div class="user-spinner-wrapper">
+    <mat-progress-spinner diameter="25" color="primary" mode="indeterminate"></mat-progress-spinner>
+  </div>
 </div>
 
 <div class="max-width-container">
   <cnsl-meta-layout>
-    <cnsl-sidenav [(ngModel)]="currentSetting" [settingsList]="settingsList" queryParam="id">
+    <cnsl-sidenav
+      [(ngModel)]="currentSetting"
+      [settingsList]="settingsList"
+      queryParam="id"
+      (ngModelChange)="settingChanged()"
+    >
       <ng-container *ngIf="currentSetting === 'general'">
         <cnsl-card
           *ngIf="user && user.human && user.human.profile"
@@ -28,7 +35,7 @@
             [showEditImage]="true"
             [preferredLoginName]="user.preferredLoginName"
             [genders]="genders"
-            [languages]="languages"
+            [languages]="(langSvc.supported$ | async) || []"
             [username]="user.userName"
             [user]="user.human"
             [disabled]="false"
@@ -113,7 +120,11 @@
 
         <cnsl-auth-passwordless *ngIf="user" #mfaComponent></cnsl-auth-passwordless>
 
-        <cnsl-auth-user-mfa *ngIf="user" #mfaComponent></cnsl-auth-user-mfa>
+        <cnsl-auth-user-mfa
+          [phoneVerified]="user.human?.phone?.isPhoneVerified ?? false"
+          *ngIf="user"
+          #mfaComponent
+        ></cnsl-auth-user-mfa>
       </ng-container>
 
       <ng-container *ngIf="currentSetting === 'grants'">
@@ -126,14 +137,14 @@
             [userId]="user.id"
             [context]="USERGRANTCONTEXT"
             [displayedColumns]="[
-              'select',
               'org',
               'projectId',
               'type',
               'creationDate',
               'changeDate',
+              'state',
               'roleNamesList',
-              'actions'
+              'actions',
             ]"
             [disableWrite]="(['user.grant.write$'] | hasRole | async) === false"
             [disableDelete]="(['user.grant.delete$'] | hasRole | async) === false"
@@ -155,6 +166,7 @@
       <ng-container *ngIf="currentSetting === 'metadata'">
         <cnsl-metadata
           [metadata]="metadata"
+          [description]="'DESCRIPTIONS.USERS.SELF.METADATA' | translate"
           [disabled]="(['user.write:' + user.id, 'user.write'] | hasRole | async) === false"
           *ngIf="user && user.id"
           (editClicked)="editMetadata()"

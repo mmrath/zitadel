@@ -11,6 +11,13 @@ Login:
   RegisterButtonText: 注册
   NextButtonText: 继续
 
+LDAP:
+  Title: 注册
+  Description: 输入您的登录数据。
+  LoginNameLabel: 登录名
+  PasswordLabel: 密码
+  NextButtonText: 继续
+
 SelectAccount:
   Title: 选择账户
   Description: 使用您的 ZITADEL 帐户
@@ -18,22 +25,24 @@ SelectAccount:
   DescriptionLinking: 选择您的帐户以与您的外部用户关联。
   OtherUser: 其他用户
   SessionState0: 启用
-  SessionState1: 停用
+  SessionState1: 未登入
   MustBeMemberOfOrg: 用户必须是 {{.OrgName}} 组织的成员。
 
 Password:
   Title: 密码
   Description: 输入您的登录数据。
   PasswordLabel: 密码
-  MinLength: 密码
-  HasUppercase: 大写字母
-  HasLowercase: 小写字母
-  HasNumber: 数字
-  HasSymbol: 符号
-  Confirmation: 确认匹配
-  ResetLinkText: 重设密码
-  BackButtonText: 后退
-  NextButtonText: 继续
+  MinLength: 必须至少有
+  MinLengthp2: 个字符。
+  MaxLength: 必须少于70个字符。
+  HasUppercase: 必须包含一个大写字母。
+  HasLowercase: 必须包含一个小写字母。
+  HasNumber: 必须包含一个数字。
+  HasSymbol: 必须包含一个符号。
+  Confirmation: 密码确认匹配。
+  ResetLinkText: 重置密码
+  BackButtonText: 返回
+  NextButtonText: 下一步
 
 UsernameChange:
   Title: 更改用户名
@@ -77,11 +86,22 @@ InitUserDone:
   NextButtonText: 继续
   CancelButtonText: 取消
 
+InviteUser:
+  Title: 激活用户
+  Description: 使用以下代码验证您的电子邮件并设置您的密码。
+  CodeLabel: 代码
+  NewPasswordLabel: 新密码
+  NewPasswordConfirm: 确认密码
+  NextButtonText: 下一步
+  ResendButtonText: 重新发送代码
+
 InitMFAPrompt:
   Title: 两步验证设置
   Description: 两步验证为您的账户提供了额外的安全保障。这确保只有你能访问你的账户。
-  Provider0: 软件应用（如 Google/Migrosoft Authenticator、Authy）
+  Provider0: 软件应用（如 Google/Microsoft Authenticator、Authy）
   Provider1: 硬件设备（如 Face ID、Windows Hello、指纹）
+  Provider3: 一次性密码短信
+  Provider4: 一次性密码电子邮件
   NextButtonText: 继续
   SkipButtonText: 跳过
 
@@ -89,6 +109,16 @@ InitMFAOTP:
   Title: 双因素验证
   Description: 创建你的双因素。如果你还没有，请下载一个认证器应用程序。
   OTPDescription: 使用您的身份验证器应用程序（例如 Google Authenticator）扫描代码或复制密码并在下方插入生成的代码。
+  PhoneLabel: 电话号码
+  CodeLabel: 验证码
+  EditButtonText: 编辑
+  ResendButtonText: 重发代码
+  NextButtonText: 继续
+
+InitMFASMS:
+  Title: 双因素验证
+  DescriptionPhone: 创建双因素身份验证。输入您的电话号码进行验证。
+  DescriptionCode: 创建双因素身份验证。输入收到的代码以验证您的电话号码。
   SecretLabel: 秘钥
   CodeLabel: 验证码
   NextButtonText: 继续
@@ -111,12 +141,21 @@ InitMFADone:
 MFAProvider:
   Provider0: 软件应用（如 Google/Migrosoft Authenticator、Authy）
   Provider1: 硬件设备（如 Face ID、Windows Hello、指纹）
+  Provider3: 一次性密码短信
+  Provider4: 一次性密码电子邮件
   ChooseOther: 或选择其他选项
 
 VerifyMFAOTP:
   Title: 验证2-Factor
   Description: 验证你的第二个因素
   CodeLabel: 验证码
+  NextButtonText: 继续
+
+VerifyOTP:
+  Title: 验证2-Factor
+  Description: 验证你的第二个因素
+  CodeLabel: 验证码
+  ResendButtonText: 重发代码
   NextButtonText: 继续
 
 VerifyMFAU2F:
@@ -160,11 +199,13 @@ PasswordlessRegistrationDone:
 PasswordChange:
   Title: 更改密码
   Description: 更改您的密码。输入您的旧密码和新密码。
+  ExpiredDescription: 您的密码已过期，需要更改。请输入您的新旧密码。
   OldPasswordLabel: 旧密码
   NewPasswordLabel: 新密码
   NewPasswordConfirmLabel: 确认密码
   CancelButtonText: 取消
   NextButtonText: 继续
+  Footer: 页脚
 
 PasswordChangeDone:
   Title: 更改密码
@@ -195,6 +236,7 @@ RegisterOption:
   Description: 选择您的注册方式
   RegisterUsernamePasswordButtonText: 使用用户名密码
   ExternalLoginDescription: 或使用外部身份提供者
+  LoginButtonText: 登录
 
 RegistrationUser:
   Title: 注册
@@ -210,6 +252,19 @@ RegistrationUser:
   Italian: Italiano
   French: Français
   Chinese: 简体中文
+  Polish: Polski
+  Japanese: 日本語
+  Spanish: Español
+  Bulgarian: Български
+  Portuguese: Português
+  Macedonian: Македонски
+  Czech: Čeština
+  Russian: Русский
+  Dutch: Nederlands
+  Swedish: Svenska
+  Indonesian: Bahasa Indonesia
+  Hungarian: Magyar
+  Korean: 한국어
   GenderLabel: 性别
   Female: 女性
   Male: 男性
@@ -219,10 +274,10 @@ RegistrationUser:
   TosAndPrivacyLabel: 条款和条款
   TosConfirm: 我接受
   TosLinkText: 服务条款
-  TosConfirmAnd: 和
+  PrivacyConfirm: 我接受
   PrivacyLinkText: 隐私政策
   ExternalLogin: 使用外部身份提供者注册
-  BackButtonText: 返回
+  BackButtonText: 登录
   NextButtonText: 继续
 
 ExternalRegistrationUserOverview:
@@ -235,15 +290,28 @@ ExternalRegistrationUserOverview:
   NicknameLabel: 昵称
   PhoneLabel: 手机号码
   LanguageLabel: 语言
-  German: 德语
-  English: 英语
-  Italian: 意大利语
-  French: 法语
+  German: Deutsch
+  English: English
+  Italian: Italiano
+  French: Français
   Chinese: 简体中文
+  Polish: Polski
+  Japanese: 日本語
+  Spanish: Español
+  Bulgarian: Български
+  Portuguese: Português
+  Macedonian: Македонски
+  Czech: Čeština
+  Russian: Русский
+  Dutch: Nederlands
+  Swedish: Svenska
+  Indonesian: Bahasa Indonesia
+  Hungarian: Magyar
+  Korean: 한국어
   TosAndPrivacyLabel: 条款和条款
   TosConfirm: 我接受
   TosLinkText: 服务条款
-  TosConfirmAnd: 和
+  PrivacyConfirm: 我接受
   PrivacyLinkText: 隐私政策
   ExternalLogin: 使用外部身份提供者注册
   BackButtonText: 返回
@@ -262,7 +330,7 @@ RegistrationOrg:
   TosAndPrivacyLabel: 条款和条款
   TosConfirm: 我接受
   TosLinkText: 服务条款
-  TosConfirmAnd: 和
+  PrivacyConfirm: 我接受
   PrivacyLinkText: 隐私政策
   SaveButtonText: 创建组织
 
@@ -276,6 +344,12 @@ LogoutDone:
   Title: 退出登录
   Description: 您已成功退出登录。
   LoginButtonText: 登录
+
+LinkingUserPrompt:
+  Title: 已找到现有用户
+  Description: "您想关联您现有的帐户吗:"
+  LinkButtonText: 关联
+  OtherButtonText: 其他选项
 
 LinkingUsersDone:
   Title: 用户链接
@@ -291,19 +365,52 @@ ExternalNotFound:
   TosAndPrivacyLabel: 条款和条款
   TosConfirm: 我接受
   TosLinkText: 服务条款
-  TosConfirmAnd: 和
+  PrivacyConfirm: 我接受
   PrivacyLinkText: 隐私政策
   German: Deutsch
   English: English
   Italian: Italiano
   French: Français
   Chinese: 简体中文
+  Polish: Polski
+  Japanese: 日本語
+  Spanish: Español
+  Bulgarian: Български
+  Portuguese: Português
+  Macedonian: Македонски
+  Czech: Čeština
+  Russian: Русский
+  Dutch: Nederlands
+  Swedish: Svenska
+  Indonesian: Bahasa Indonesia
+  Hungarian: Magyar
+  Korean: 한국어
+DeviceAuth:
+  Title: 设备授权
+  UserCode:
+    Label: 用户代码
+    Description: 输入设备上显示的用户代码。
+    ButtonNext: 下一个
+  Action:
+    Description: 授予设备访问权限。
+    GrantDevice: 您即将授予设备
+    AccessToScopes: 访问以下范围
+    Button:
+      Allow: 允许
+      Deny: 否定
+  Done:
+    Description: 完毕。
+    Approved: 设备授权已批准。 您现在可以返回设备。
+    Denied: 设备授权被拒绝。 您现在可以返回设备。
 
 Footer:
   PoweredBy: Powered By
   Tos: 服务条款
   PrivacyPolicy: 隐私政策
   Help: 帮助
+  SupportEmail: 支持邮箱
+
+SignIn: 通过 {{.Provider}} 登录
 
 Errors:
   Internal: 发生了内部错误
@@ -316,6 +423,7 @@ Errors:
     MissingParameters: 缺少必需的参数
   User:
     NotFound: 找不到用户
+    AlreadyExists: 用户已存在
     Inactive: 用户处于停用状态
     NotFoundOnOrg: 在所选组织中找不到用户
     NotAllowedOrg: 用户不是所需组织的成员
@@ -324,11 +432,39 @@ Errors:
     Invalid: 无效的用户数据
     DomainNotAllowedAsUsername: 域名已存在，但无法使用
     NotAllowedToLink: 不允许用户使用外部身份提供者注册
+    Profile:
+      NotFound: 未找到个人资料
+      NotChanged: 个人资料未更改
+      Empty: 简介是空的
+      FirstNameEmpty: 简介中的名字是空的
+      LastNameEmpty: 简介中的姓氏是空的
+      IDMissing: 简介ID丢失
+    Email:
+      NotFound: 电子邮件没有找到
+      Invalid: 电子邮件无效
+      AlreadyVerified: 电子邮件已经过验证
+      NotChanged: 电子邮件未更改
+      Empty: 电子邮件是空的
+      IDMissing: 电子邮件ID丢失
+    Phone:
+      NotFound: 手机号码未找到
+      Invalid: 手机号码无效
+      AlreadyVerified: 手机号码已经验证
+      Empty: 电话号码是空的
+      NotChanged: 电话号码没有改变
+    Address:
+      NotFound: 找不到地址
+      NotChanged: 地址没有改变
+    Username:
+      AlreadyExists: 用户名已被使用
+      Reserved: 用户名已被使用
+      Empty: 用户名是空的
     Password:
       ConfirmationWrong: 密码不一致
       Empty: 密码为空
       Invalid: 密码无效
       InvalidAndLocked: 密码无效且用户被锁定，请联系您的管理员。
+      NotChanged: 新密码不能与您当前的密码相同
     UsernameOrPassword:
       Invalid: 用户名或密码无效
     PasswordComplexityPolicy:
@@ -366,6 +502,13 @@ Errors:
       ExternalUserIDEmpty: 外部用户 ID 为空
       UserDisplayNameEmpty: 用户显示名称为空
       NoExternalUserData: 未收到外部用户数据
+      CreationNotAllowed: 不允许在该供应商上创建新用户
+      LinkingNotAllowed: 在此提供者上不允许链接一个用户
+      NoOptionAllowed: 此提供商不允许创建或链接。请联系您的管理员。
+      LoginFailedSwitchLocal: |
+        外部身份提供商的登录失败。返回到本地登录。
+
+        错误详情: {{.Details}}
     GrantRequired: 无法登录，用户需要在应用程序上拥有至少一项授权，请联系您的管理员。
     ProjectRequired: 无法登录，用户的组织必须授予项目，请联系您的管理员。
   IdentityProvider:
@@ -373,5 +516,10 @@ Errors:
   IAM:
     LockoutPolicy:
       NotExisting: 用户锁定政策不存在
+  Org:
+    LoginPolicy:
+      RegistrationNotAllowed: 不允许注册
+  DeviceAuth:
+    NotExisting: 用户代码不存在
 
 optional: (可选)

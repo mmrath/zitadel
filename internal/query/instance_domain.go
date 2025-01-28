@@ -8,8 +8,10 @@ import (
 	sq "github.com/Masterminds/squirrel"
 
 	"github.com/zitadel/zitadel/internal/api/authz"
-	"github.com/zitadel/zitadel/internal/errors"
+	"github.com/zitadel/zitadel/internal/api/call"
 	"github.com/zitadel/zitadel/internal/query/projection"
+	"github.com/zitadel/zitadel/internal/telemetry/tracing"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 type InstanceDomain struct {
@@ -57,42 +59,47 @@ func NewInstanceDomainPrimarySearchQuery(primary bool) (SearchQuery, error) {
 }
 
 func (q *Queries) SearchInstanceDomains(ctx context.Context, queries *InstanceDomainSearchQueries) (domains *InstanceDomains, err error) {
-	query, scan := prepareInstanceDomainsQuery()
+	ctx, span := tracing.NewSpan(ctx)
+	defer func() { span.EndWithError(err) }()
+
+	query, scan := prepareInstanceDomainsQuery(ctx, q.client)
 	stmt, args, err := queries.toQuery(query).
 		Where(sq.Eq{
 			InstanceDomainInstanceIDCol.identifier(): authz.GetInstance(ctx).InstanceID(),
 		}).ToSql()
 	if err != nil {
-		return nil, errors.ThrowInvalidArgument(err, "QUERY-inlsF", "Errors.Query.SQLStatement")
+		return nil, zerrors.ThrowInvalidArgument(err, "QUERY-inlsF", "Errors.Query.SQLStatement")
 	}
 
 	return q.queryInstanceDomains(ctx, stmt, scan, args...)
 }
 
 func (q *Queries) SearchInstanceDomainsGlobal(ctx context.Context, queries *InstanceDomainSearchQueries) (domains *InstanceDomains, err error) {
-	query, scan := prepareInstanceDomainsQuery()
+	ctx, span := tracing.NewSpan(ctx)
+	defer func() { span.EndWithError(err) }()
+
+	query, scan := prepareInstanceDomainsQuery(ctx, q.client)
 	stmt, args, err := queries.toQuery(query).ToSql()
 	if err != nil {
-		return nil, errors.ThrowInvalidArgument(err, "QUERY-IHhLR", "Errors.Query.SQLStatement")
+		return nil, zerrors.ThrowInvalidArgument(err, "QUERY-IHhLR", "Errors.Query.SQLStatement")
 	}
 
 	return q.queryInstanceDomains(ctx, stmt, scan, args...)
 }
 
 func (q *Queries) queryInstanceDomains(ctx context.Context, stmt string, scan func(*sql.Rows) (*InstanceDomains, error), args ...interface{}) (domains *InstanceDomains, err error) {
-	rows, err := q.client.QueryContext(ctx, stmt, args...)
-	if err != nil {
-		return nil, errors.ThrowInternal(err, "QUERY-Dh9Ap", "Errors.Internal")
-	}
-	domains, err = scan(rows)
+	err = q.client.QueryContext(ctx, func(rows *sql.Rows) error {
+		domains, err = scan(rows)
+		return err
+	}, stmt, args...)
 	if err != nil {
 		return nil, err
 	}
-	domains.LatestSequence, err = q.latestSequence(ctx, instanceDomainsTable)
+	domains.State, err = q.latestState(ctx, instanceDomainsTable)
 	return domains, err
 }
 
-func prepareInstanceDomainsQuery() (sq.SelectBuilder, func(*sql.Rows) (*InstanceDomains, error)) {
+func prepareInstanceDomainsQuery(ctx context.Context, db prepareDatabase) (sq.SelectBuilder, func(*sql.Rows) (*InstanceDomains, error)) {
 	return sq.Select(
 			InstanceDomainCreationDateCol.identifier(),
 			InstanceDomainChangeDateCol.identifier(),
@@ -102,7 +109,8 @@ func prepareInstanceDomainsQuery() (sq.SelectBuilder, func(*sql.Rows) (*Instance
 			InstanceDomainIsGeneratedCol.identifier(),
 			InstanceDomainIsPrimaryCol.identifier(),
 			countColumn.identifier(),
-		).From(instanceDomainsTable.identifier()).PlaceholderFormat(sq.Dollar),
+		).From(instanceDomainsTable.identifier() + db.Timetravel(call.Took(ctx))).
+			PlaceholderFormat(sq.Dollar),
 		func(rows *sql.Rows) (*InstanceDomains, error) {
 			domains := make([]*InstanceDomain, 0)
 			var count uint64
@@ -125,7 +133,7 @@ func prepareInstanceDomainsQuery() (sq.SelectBuilder, func(*sql.Rows) (*Instance
 			}
 
 			if err := rows.Close(); err != nil {
-				return nil, errors.ThrowInternal(err, "QUERY-8nlWW", "Errors.Query.CloseRows")
+				return nil, zerrors.ThrowInternal(err, "QUERY-8nlWW", "Errors.Query.CloseRows")
 			}
 
 			return &InstanceDomains{

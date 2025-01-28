@@ -2,8 +2,11 @@ package authz
 
 import (
 	"context"
+	"time"
 
 	"golang.org/x/text/language"
+
+	"github.com/zitadel/zitadel/internal/feature"
 )
 
 var (
@@ -15,14 +18,18 @@ type Instance interface {
 	ProjectID() string
 	ConsoleClientID() string
 	ConsoleApplicationID() string
-	RequestedDomain() string
-	RequestedHost() string
 	DefaultLanguage() language.Tag
 	DefaultOrganisationID() string
+	SecurityPolicyAllowedOrigins() []string
+	EnableImpersonation() bool
+	Block() *bool
+	AuditLogRetention() *time.Duration
+	Features() feature.Features
 }
 
 type InstanceVerifier interface {
-	InstanceByHost(context.Context, string) (Instance, error)
+	InstanceByHost(ctx context.Context, host, publicDomain string) (Instance, error)
+	InstanceByID(ctx context.Context, id string) (Instance, error)
 }
 
 type instance struct {
@@ -32,6 +39,15 @@ type instance struct {
 	appID     string
 	clientID  string
 	orgID     string
+	features  feature.Features
+}
+
+func (i *instance) Block() *bool {
+	return nil
+}
+
+func (i *instance) AuditLogRetention() *time.Duration {
+	return nil
 }
 
 func (i *instance) InstanceID() string {
@@ -50,20 +66,24 @@ func (i *instance) ConsoleApplicationID() string {
 	return i.appID
 }
 
-func (i *instance) RequestedDomain() string {
-	return i.domain
-}
-
-func (i *instance) RequestedHost() string {
-	return i.domain
-}
-
 func (i *instance) DefaultLanguage() language.Tag {
 	return language.Und
 }
 
 func (i *instance) DefaultOrganisationID() string {
 	return i.orgID
+}
+
+func (i *instance) SecurityPolicyAllowedOrigins() []string {
+	return nil
+}
+
+func (i *instance) EnableImpersonation() bool {
+	return false
+}
+
+func (i *instance) Features() feature.Features {
+	return i.features
 }
 
 func GetInstance(ctx context.Context) Instance {
@@ -74,22 +94,16 @@ func GetInstance(ctx context.Context) Instance {
 	return instance
 }
 
+func GetFeatures(ctx context.Context) feature.Features {
+	return GetInstance(ctx).Features()
+}
+
 func WithInstance(ctx context.Context, instance Instance) context.Context {
 	return context.WithValue(ctx, instanceKey, instance)
 }
 
 func WithInstanceID(ctx context.Context, id string) context.Context {
 	return context.WithValue(ctx, instanceKey, &instance{id: id})
-}
-
-func WithRequestedDomain(ctx context.Context, domain string) context.Context {
-	i, ok := ctx.Value(instanceKey).(*instance)
-	if !ok {
-		i = new(instance)
-	}
-
-	i.domain = domain
-	return context.WithValue(ctx, instanceKey, i)
 }
 
 func WithConsole(ctx context.Context, projectID, appID string) context.Context {
@@ -100,6 +114,23 @@ func WithConsole(ctx context.Context, projectID, appID string) context.Context {
 
 	i.projectID = projectID
 	i.appID = appID
-	//i.clientID = clientID
+	return context.WithValue(ctx, instanceKey, i)
+}
+
+func WithConsoleClientID(ctx context.Context, clientID string) context.Context {
+	i, ok := ctx.Value(instanceKey).(*instance)
+	if !ok {
+		i = new(instance)
+	}
+	i.clientID = clientID
+	return context.WithValue(ctx, instanceKey, i)
+}
+
+func WithFeatures(ctx context.Context, f feature.Features) context.Context {
+	i, ok := ctx.Value(instanceKey).(*instance)
+	if !ok {
+		i = new(instance)
+	}
+	i.features = f
 	return context.WithValue(ctx, instanceKey, i)
 }

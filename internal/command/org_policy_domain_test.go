@@ -5,14 +5,15 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"golang.org/x/text/language"
 
 	"github.com/zitadel/zitadel/internal/domain"
-	caos_errs "github.com/zitadel/zitadel/internal/errors"
 	"github.com/zitadel/zitadel/internal/eventstore"
-	"github.com/zitadel/zitadel/internal/eventstore/repository"
-	"github.com/zitadel/zitadel/internal/eventstore/v1/models"
+	"github.com/zitadel/zitadel/internal/repository/instance"
 	"github.com/zitadel/zitadel/internal/repository/org"
 	"github.com/zitadel/zitadel/internal/repository/policy"
+	"github.com/zitadel/zitadel/internal/repository/user"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 func TestCommandSide_AddDomainPolicy(t *testing.T) {
@@ -20,12 +21,14 @@ func TestCommandSide_AddDomainPolicy(t *testing.T) {
 		eventstore *eventstore.Eventstore
 	}
 	type args struct {
-		ctx    context.Context
-		orgID  string
-		policy *domain.DomainPolicy
+		ctx                                    context.Context
+		orgID                                  string
+		userLoginMustBeDomain                  bool
+		validateOrgDomains                     bool
+		smtpSenderAddressMatchesInstanceDomain bool
 	}
 	type res struct {
-		want *domain.DomainPolicy
+		want *domain.ObjectDetails
 		err  func(error) bool
 	}
 	tests := []struct {
@@ -42,18 +45,17 @@ func TestCommandSide_AddDomainPolicy(t *testing.T) {
 				),
 			},
 			args: args{
-				ctx: context.Background(),
-				policy: &domain.DomainPolicy{
-					UserLoginMustBeDomain: true,
-					ValidateOrgDomains:    true,
-				},
+				ctx:                                    context.Background(),
+				userLoginMustBeDomain:                  true,
+				validateOrgDomains:                     true,
+				smtpSenderAddressMatchesInstanceDomain: true,
 			},
 			res: res{
-				err: caos_errs.IsErrorInvalidArgument,
+				err: zerrors.IsErrorInvalidArgument,
 			},
 		},
 		{
-			name: "mail template already existing, already exists error",
+			name: "policy already existing, already exists error",
 			fields: fields{
 				eventstore: eventstoreExpect(
 					t,
@@ -70,56 +72,164 @@ func TestCommandSide_AddDomainPolicy(t *testing.T) {
 				),
 			},
 			args: args{
-				ctx:   context.Background(),
-				orgID: "org1",
-				policy: &domain.DomainPolicy{
-					UserLoginMustBeDomain:                  true,
-					ValidateOrgDomains:                     true,
-					SMTPSenderAddressMatchesInstanceDomain: true,
-				},
+				ctx:                                    context.Background(),
+				orgID:                                  "org1",
+				userLoginMustBeDomain:                  true,
+				validateOrgDomains:                     true,
+				smtpSenderAddressMatchesInstanceDomain: true,
 			},
 			res: res{
-				err: caos_errs.IsErrorAlreadyExists,
+				err: zerrors.IsErrorAlreadyExists,
 			},
 		},
 		{
-			name: "add policy,ok",
+			name: "add policy, no userLoginMustBeDomain change, ok",
 			fields: fields{
 				eventstore: eventstoreExpect(
 					t,
 					expectFilter(),
-					expectPush(
-						[]*repository.Event{
-							eventFromEventPusher(
-								org.NewDomainPolicyAddedEvent(context.Background(),
-									&org.NewAggregate("org1").Aggregate,
-									true,
-									true,
-									true,
-								),
+					expectFilter(
+						eventFromEventPusher(
+							instance.NewDomainPolicyAddedEvent(context.Background(),
+								&instance.NewAggregate("instanceID").Aggregate,
+								true,
+								false,
+								false,
 							),
-						},
+						),
+					),
+					expectPush(
+						org.NewDomainPolicyAddedEvent(context.Background(),
+							&org.NewAggregate("org1").Aggregate,
+							true,
+							true,
+							true,
+						),
 					),
 				),
 			},
 			args: args{
-				ctx:   context.Background(),
-				orgID: "org1",
-				policy: &domain.DomainPolicy{
-					UserLoginMustBeDomain:                  true,
-					ValidateOrgDomains:                     true,
-					SMTPSenderAddressMatchesInstanceDomain: true,
-				},
+				ctx:                                    context.Background(),
+				orgID:                                  "org1",
+				userLoginMustBeDomain:                  true,
+				validateOrgDomains:                     true,
+				smtpSenderAddressMatchesInstanceDomain: true,
 			},
 			res: res{
-				want: &domain.DomainPolicy{
-					ObjectRoot: models.ObjectRoot{
-						AggregateID:   "org1",
-						ResourceOwner: "org1",
-					},
-					UserLoginMustBeDomain:                  true,
-					ValidateOrgDomains:                     true,
-					SMTPSenderAddressMatchesInstanceDomain: true,
+				want: &domain.ObjectDetails{
+					ResourceOwner: "org1",
+				},
+			},
+		},
+		{
+			name: "add policy, userLoginMustBeDomain changed, ok",
+			fields: fields{
+				eventstore: eventstoreExpect(
+					t,
+					expectFilter(),
+					expectFilter(
+						eventFromEventPusher(
+							instance.NewDomainPolicyAddedEvent(context.Background(),
+								&instance.NewAggregate("instanceID").Aggregate,
+								false,
+								false,
+								false,
+							),
+						),
+					),
+					expectFilter(
+						eventFromEventPusher(
+							org.NewDomainVerifiedEvent(
+								context.Background(),
+								&org.NewAggregate("org1").Aggregate,
+								"org.com",
+							),
+						),
+						eventFromEventPusher(
+							org.NewDomainVerifiedEvent(
+								context.Background(),
+								&org.NewAggregate("org1").Aggregate,
+								"test.com",
+							),
+						),
+						eventFromEventPusher(
+							org.NewDomainRemovedEvent(
+								context.Background(),
+								&org.NewAggregate("org1").Aggregate,
+								"test.com",
+								true,
+							),
+						),
+						eventFromEventPusher(
+							org.NewDomainPrimarySetEvent(
+								context.Background(),
+								&org.NewAggregate("org1").Aggregate,
+								"org.com",
+							),
+						),
+						eventFromEventPusher(
+							user.NewHumanAddedEvent(context.Background(),
+								&user.NewAggregate("user1", "org1").Aggregate,
+								"user1@org.com",
+								"firstname",
+								"lastname",
+								"nickname",
+								"displayname",
+								language.English,
+								domain.GenderUnspecified,
+								"user1@org.com",
+								false,
+							),
+						),
+						eventFromEventPusher(
+							user.NewHumanAddedEvent(context.Background(),
+								&user.NewAggregate("user2", "org1").Aggregate,
+								"user@test.com",
+								"firstname",
+								"lastname",
+								"nickname",
+								"displayname",
+								language.English,
+								domain.GenderUnspecified,
+								"user@test.com",
+								false,
+							),
+						),
+					),
+					expectPush(
+						org.NewDomainPolicyAddedEvent(context.Background(),
+							&org.NewAggregate("org1").Aggregate,
+							true,
+							true,
+							true,
+						),
+						user.NewUsernameChangedEvent(context.Background(),
+							&user.NewAggregate("user1", "org1").Aggregate,
+							"user1@org.com",
+							"user1",
+							true,
+							user.UsernameChangedEventWithPolicyChange(),
+						),
+						user.NewUsernameChangedEvent(context.Background(),
+							&user.NewAggregate("user2", "org1").Aggregate,
+							"user@test.com",
+							"user@test.com",
+							true,
+							user.UsernameChangedEventWithPolicyChange(),
+						),
+					),
+				),
+			},
+			args: args{
+				ctx:                                    context.Background(),
+				orgID:                                  "org1",
+				userLoginMustBeDomain:                  true,
+				validateOrgDomains:                     true,
+				smtpSenderAddressMatchesInstanceDomain: true,
+			},
+			res: res{
+				want: &domain.ObjectDetails{
+					ResourceOwner: "org1",
 				},
 			},
 		},
@@ -129,7 +239,7 @@ func TestCommandSide_AddDomainPolicy(t *testing.T) {
 			r := &Commands{
 				eventstore: tt.fields.eventstore,
 			}
-			got, err := r.AddOrgDomainPolicy(tt.args.ctx, tt.args.orgID, tt.args.policy)
+			got, err := r.AddOrgDomainPolicy(tt.args.ctx, tt.args.orgID, tt.args.userLoginMustBeDomain, tt.args.validateOrgDomains, tt.args.smtpSenderAddressMatchesInstanceDomain)
 			if tt.res.err == nil {
 				assert.NoError(t, err)
 			}
@@ -137,7 +247,7 @@ func TestCommandSide_AddDomainPolicy(t *testing.T) {
 				t.Errorf("got wrong err: %v ", err)
 			}
 			if tt.res.err == nil {
-				assert.Equal(t, tt.res.want, got)
+				assertObjectDetails(t, tt.res.want, got)
 			}
 		})
 	}
@@ -148,12 +258,14 @@ func TestCommandSide_ChangeDomainPolicy(t *testing.T) {
 		eventstore *eventstore.Eventstore
 	}
 	type args struct {
-		ctx    context.Context
-		orgID  string
-		policy *domain.DomainPolicy
+		ctx                                    context.Context
+		orgID                                  string
+		userLoginMustBeDomain                  bool
+		validateOrgDomains                     bool
+		smtpSenderAddressMatchesInstanceDomain bool
 	}
 	type res struct {
-		want *domain.DomainPolicy
+		want *domain.ObjectDetails
 		err  func(error) bool
 	}
 	tests := []struct {
@@ -170,14 +282,13 @@ func TestCommandSide_ChangeDomainPolicy(t *testing.T) {
 				),
 			},
 			args: args{
-				ctx: context.Background(),
-				policy: &domain.DomainPolicy{
-					UserLoginMustBeDomain: true,
-					ValidateOrgDomains:    true,
-				},
+				ctx:                                    context.Background(),
+				userLoginMustBeDomain:                  true,
+				validateOrgDomains:                     true,
+				smtpSenderAddressMatchesInstanceDomain: true,
 			},
 			res: res{
-				err: caos_errs.IsErrorInvalidArgument,
+				err: zerrors.IsErrorInvalidArgument,
 			},
 		},
 		{
@@ -189,15 +300,14 @@ func TestCommandSide_ChangeDomainPolicy(t *testing.T) {
 				),
 			},
 			args: args{
-				ctx:   context.Background(),
-				orgID: "org1",
-				policy: &domain.DomainPolicy{
-					UserLoginMustBeDomain: true,
-					ValidateOrgDomains:    true,
-				},
+				ctx:                                    context.Background(),
+				orgID:                                  "org1",
+				userLoginMustBeDomain:                  true,
+				validateOrgDomains:                     true,
+				smtpSenderAddressMatchesInstanceDomain: true,
 			},
 			res: res{
-				err: caos_errs.IsNotFound,
+				err: zerrors.IsNotFound,
 			},
 		},
 		{
@@ -218,20 +328,54 @@ func TestCommandSide_ChangeDomainPolicy(t *testing.T) {
 				),
 			},
 			args: args{
-				ctx:   context.Background(),
-				orgID: "org1",
-				policy: &domain.DomainPolicy{
-					UserLoginMustBeDomain:                  true,
-					ValidateOrgDomains:                     true,
-					SMTPSenderAddressMatchesInstanceDomain: true,
-				},
+				ctx:                                    context.Background(),
+				orgID:                                  "org1",
+				userLoginMustBeDomain:                  true,
+				validateOrgDomains:                     true,
+				smtpSenderAddressMatchesInstanceDomain: true,
 			},
 			res: res{
-				err: caos_errs.IsPreconditionFailed,
+				err: zerrors.IsPreconditionFailed,
 			},
 		},
 		{
-			name: "change, ok",
+			name: "change, no userLoginMustBeDomain change, ok",
+			fields: fields{
+				eventstore: eventstoreExpect(
+					t,
+					expectFilter(
+						eventFromEventPusher(
+							org.NewDomainPolicyAddedEvent(context.Background(),
+								&org.NewAggregate("org1").Aggregate,
+								false,
+								true,
+								true,
+							),
+						),
+					),
+					expectPush(
+						newDomainPolicyChangedEvent(context.Background(), "org1",
+							policy.ChangeValidateOrgDomains(false),
+							policy.ChangeSMTPSenderAddressMatchesInstanceDomain(false),
+						),
+					),
+				),
+			},
+			args: args{
+				ctx:                                    context.Background(),
+				orgID:                                  "org1",
+				userLoginMustBeDomain:                  false,
+				validateOrgDomains:                     false,
+				smtpSenderAddressMatchesInstanceDomain: false,
+			},
+			res: res{
+				want: &domain.ObjectDetails{
+					ResourceOwner: "org1",
+				},
+			},
+		},
+		{
+			name: "change, userLoginMustBeDomain changed, ok",
 			fields: fields{
 				eventstore: eventstoreExpect(
 					t,
@@ -245,33 +389,61 @@ func TestCommandSide_ChangeDomainPolicy(t *testing.T) {
 							),
 						),
 					),
-					expectPush(
-						[]*repository.Event{
-							eventFromEventPusher(
-								newDomainPolicyChangedEvent(context.Background(), "org1", false, false, false),
+					expectFilter(
+						eventFromEventPusher(
+							org.NewDomainPrimarySetEvent(
+								context.Background(),
+								&org.NewAggregate("org1").Aggregate,
+								"org.com",
 							),
-						},
+						),
+						eventFromEventPusher(
+							org.NewDomainPrimarySetEvent(context.Background(),
+								&org.NewAggregate("org1").Aggregate,
+								"org.com",
+							),
+						),
+						eventFromEventPusher(
+							user.NewHumanAddedEvent(context.Background(),
+								&user.NewAggregate("user1", "org1").Aggregate,
+								"user1",
+								"firstname",
+								"lastname",
+								"nickname",
+								"displayname",
+								language.English,
+								domain.GenderUnspecified,
+								"user1@org.com",
+								false,
+							),
+						),
+					),
+					expectPush(
+						newDomainPolicyChangedEvent(context.Background(), "org1",
+							policy.ChangeUserLoginMustBeDomain(false),
+							policy.ChangeValidateOrgDomains(false),
+							policy.ChangeSMTPSenderAddressMatchesInstanceDomain(false),
+						),
+						user.NewUsernameChangedEvent(context.Background(),
+							&user.NewAggregate("user1", "org1").Aggregate,
+							"user1",
+							"user1@org.com",
+							false,
+							user.UsernameChangedEventWithPolicyChange(),
+						),
 					),
 				),
 			},
 			args: args{
-				ctx:   context.Background(),
-				orgID: "org1",
-				policy: &domain.DomainPolicy{
-					UserLoginMustBeDomain:                  false,
-					ValidateOrgDomains:                     false,
-					SMTPSenderAddressMatchesInstanceDomain: false,
-				},
+				ctx:                                    context.Background(),
+				orgID:                                  "org1",
+				userLoginMustBeDomain:                  false,
+				validateOrgDomains:                     false,
+				smtpSenderAddressMatchesInstanceDomain: false,
 			},
 			res: res{
-				want: &domain.DomainPolicy{
-					ObjectRoot: models.ObjectRoot{
-						AggregateID:   "org1",
-						ResourceOwner: "org1",
-					},
-					UserLoginMustBeDomain:                  false,
-					ValidateOrgDomains:                     false,
-					SMTPSenderAddressMatchesInstanceDomain: false,
+				want: &domain.ObjectDetails{
+					ResourceOwner: "org1",
 				},
 			},
 		},
@@ -281,7 +453,7 @@ func TestCommandSide_ChangeDomainPolicy(t *testing.T) {
 			r := &Commands{
 				eventstore: tt.fields.eventstore,
 			}
-			got, err := r.ChangeOrgDomainPolicy(tt.args.ctx, tt.args.orgID, tt.args.policy)
+			got, err := r.ChangeOrgDomainPolicy(tt.args.ctx, tt.args.orgID, tt.args.userLoginMustBeDomain, tt.args.validateOrgDomains, tt.args.smtpSenderAddressMatchesInstanceDomain)
 			if tt.res.err == nil {
 				assert.NoError(t, err)
 			}
@@ -289,7 +461,7 @@ func TestCommandSide_ChangeDomainPolicy(t *testing.T) {
 				t.Errorf("got wrong err: %v ", err)
 			}
 			if tt.res.err == nil {
-				assert.Equal(t, tt.res.want, got)
+				assertObjectDetails(t, tt.res.want, got)
 			}
 		})
 	}
@@ -324,7 +496,7 @@ func TestCommandSide_RemoveDomainPolicy(t *testing.T) {
 				ctx: context.Background(),
 			},
 			res: res{
-				err: caos_errs.IsErrorInvalidArgument,
+				err: zerrors.IsErrorInvalidArgument,
 			},
 		},
 		{
@@ -340,11 +512,11 @@ func TestCommandSide_RemoveDomainPolicy(t *testing.T) {
 				orgID: "org1",
 			},
 			res: res{
-				err: caos_errs.IsNotFound,
+				err: zerrors.IsNotFound,
 			},
 		},
 		{
-			name: "remove, ok",
+			name: "remove, no userLoginMustBeDomain change, ok",
 			fields: fields{
 				eventstore: eventstoreExpect(
 					t,
@@ -358,13 +530,97 @@ func TestCommandSide_RemoveDomainPolicy(t *testing.T) {
 							),
 						),
 					),
-					expectPush(
-						[]*repository.Event{
-							eventFromEventPusher(
-								org.NewDomainPolicyRemovedEvent(context.Background(),
-									&org.NewAggregate("org1").Aggregate),
+					expectFilter(
+						eventFromEventPusher(
+							instance.NewDomainPolicyAddedEvent(context.Background(),
+								&instance.NewAggregate("instanceID").Aggregate,
+								true,
+								true,
+								true,
 							),
-						},
+						),
+					),
+					expectPush(
+						org.NewDomainPolicyRemovedEvent(context.Background(),
+							&org.NewAggregate("org1").Aggregate),
+					),
+				),
+			},
+			args: args{
+				ctx:   context.Background(),
+				orgID: "org1",
+			},
+			res: res{
+				want: &domain.ObjectDetails{
+					ResourceOwner: "org1",
+				},
+			},
+		},
+		{
+			name: "remove, userLoginMustBeDomain changed, ok",
+			fields: fields{
+				eventstore: eventstoreExpect(
+					t,
+					expectFilter(
+						eventFromEventPusher(
+							org.NewDomainPolicyAddedEvent(context.Background(),
+								&org.NewAggregate("org1").Aggregate,
+								true,
+								true,
+								true,
+							),
+						),
+					),
+					expectFilter(
+						eventFromEventPusher(
+							instance.NewDomainPolicyAddedEvent(context.Background(),
+								&instance.NewAggregate("instanceID").Aggregate,
+								false,
+								true,
+								true,
+							),
+						),
+					),
+					expectFilter(
+						eventFromEventPusher(
+							org.NewDomainPrimarySetEvent(
+								context.Background(),
+								&org.NewAggregate("org1").Aggregate,
+								"org.com",
+							),
+						),
+						eventFromEventPusher(
+							org.NewDomainPrimarySetEvent(context.Background(),
+								&org.NewAggregate("org1").Aggregate,
+								"org.com",
+							),
+						),
+						eventFromEventPusher(
+							user.NewHumanAddedEvent(context.Background(),
+								&user.NewAggregate("user1", "org1").Aggregate,
+								"user1",
+								"firstname",
+								"lastname",
+								"nickname",
+								"displayname",
+								language.English,
+								domain.GenderUnspecified,
+								"user1@org.com",
+								false,
+							),
+						),
+					),
+					expectPush(
+						org.NewDomainPolicyRemovedEvent(context.Background(),
+							&org.NewAggregate("org1").Aggregate,
+						),
+						user.NewUsernameChangedEvent(context.Background(),
+							&user.NewAggregate("user1", "org1").Aggregate,
+							"user1",
+							"user1@org.com",
+							false,
+							user.UsernameChangedEventWithPolicyChange(),
+						),
 					),
 				),
 			},
@@ -392,20 +648,16 @@ func TestCommandSide_RemoveDomainPolicy(t *testing.T) {
 				t.Errorf("got wrong err: %v ", err)
 			}
 			if tt.res.err == nil {
-				assert.Equal(t, tt.res.want, got)
+				assertObjectDetails(t, tt.res.want, got)
 			}
 		})
 	}
 }
 
-func newDomainPolicyChangedEvent(ctx context.Context, orgID string, userLoginMustBeDomain, validateOrgDomains, smtpSenderAddressMatchesInstanceDomain bool) *org.DomainPolicyChangedEvent {
+func newDomainPolicyChangedEvent(ctx context.Context, orgID string, changes ...policy.DomainPolicyChanges) *org.DomainPolicyChangedEvent {
 	event, _ := org.NewDomainPolicyChangedEvent(ctx,
 		&org.NewAggregate(orgID).Aggregate,
-		[]policy.DomainPolicyChanges{
-			policy.ChangeUserLoginMustBeDomain(userLoginMustBeDomain),
-			policy.ChangeValidateOrgDomains(validateOrgDomains),
-			policy.ChangeSMTPSenderAddressMatchesInstanceDomain(smtpSenderAddressMatchesInstanceDomain),
-		},
+		changes,
 	)
 	return event
 }

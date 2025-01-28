@@ -1,24 +1,25 @@
 import { Component, OnDestroy, OnInit } from '@angular/core';
 import { MatDialog } from '@angular/material/dialog';
 import { Router } from '@angular/router';
+import { Buffer } from 'buffer';
 import { BehaviorSubject, from, Observable, of, Subject, takeUntil } from 'rxjs';
 import { catchError, finalize, map } from 'rxjs/operators';
 import { CreationType, MemberCreateDialogComponent } from 'src/app/modules/add-member-dialog/member-create-dialog.component';
 import { ChangeType } from 'src/app/modules/changes/changes.component';
 import { InfoSectionType } from 'src/app/modules/info-section/info-section.component';
 import { MetadataDialogComponent } from 'src/app/modules/metadata/metadata-dialog/metadata-dialog.component';
+import { NameDialogComponent } from 'src/app/modules/name-dialog/name-dialog.component';
 import { PolicyComponentServiceType } from 'src/app/modules/policies/policy-component-types.enum';
 import { WarnDialogComponent } from 'src/app/modules/warn-dialog/warn-dialog.component';
 import { Member } from 'src/app/proto/generated/zitadel/member_pb';
 import { Metadata } from 'src/app/proto/generated/zitadel/metadata_pb';
 import { Org, OrgState } from 'src/app/proto/generated/zitadel/org_pb';
 import { User } from 'src/app/proto/generated/zitadel/user_pb';
+import { AdminService } from 'src/app/services/admin.service';
 import { Breadcrumb, BreadcrumbService, BreadcrumbType } from 'src/app/services/breadcrumb.service';
 import { GrpcAuthService } from 'src/app/services/grpc-auth.service';
 import { ManagementService } from 'src/app/services/mgmt.service';
 import { ToastService } from 'src/app/services/toast.service';
-import { Buffer } from 'buffer';
-import { NameDialogComponent } from 'src/app/modules/name-dialog/name-dialog.component';
 
 @Component({
   selector: 'cnsl-org-detail',
@@ -48,6 +49,7 @@ export class OrgDetailComponent implements OnInit, OnDestroy {
     private auth: GrpcAuthService,
     private dialog: MatDialog,
     public mgmtService: ManagementService,
+    private adminService: AdminService,
     private toast: ToastService,
     private router: Router,
     breadcrumbService: BreadcrumbService,
@@ -117,6 +119,63 @@ export class OrgDetailComponent implements OnInit, OnDestroy {
             .then(() => {
               this.toast.showInfo('ORG.TOAST.DEACTIVATED', true);
               this.org!.state = OrgState.ORG_STATE_INACTIVE;
+            })
+            .catch((error) => {
+              this.toast.showError(error);
+            });
+        }
+      });
+    }
+  }
+
+  public deleteOrg(): void {
+    const mgmtUserData = {
+      confirmKey: 'ACTIONS.DELETE',
+      cancelKey: 'ACTIONS.CANCEL',
+      titleKey: 'ORG.DIALOG.DELETE.TITLE',
+      warnSectionKey: 'ORG.DIALOG.DELETE.DESCRIPTION',
+      hintKey: 'ORG.DIALOG.DELETE.TYPENAME',
+      hintParam: 'ORG.DIALOG.DELETE.DESCRIPTION',
+      confirmationKey: 'ORG.DIALOG.DELETE.ORGNAME',
+      confirmation: this.org?.name,
+    };
+
+    if (this.org) {
+      let dialogRef;
+
+      dialogRef = this.dialog.open(WarnDialogComponent, {
+        data: mgmtUserData,
+        width: '400px',
+      });
+
+      // Before we remove the org we get the current default org
+      // we have to query before the current org is removed
+      dialogRef.afterClosed().subscribe((resp) => {
+        if (resp) {
+          this.adminService
+            .getDefaultOrg()
+            .then((response) => {
+              const org = response?.org;
+              if (org) {
+                // We now remove the org
+                this.mgmtService
+                  .removeOrg()
+                  .then(() => {
+                    setTimeout(() => {
+                      // We change active org to default org as
+                      // current org was deleted to avoid Organization doesn't exist
+                      this.auth.setActiveOrg(org);
+                      // Now we visit orgs
+                      this.router.navigate(['/orgs']);
+                    }, 1000);
+                    this.toast.showInfo('ORG.TOAST.DELETED', true);
+                  })
+                  .catch((error) => {
+                    this.toast.showError(error);
+                  });
+              } else {
+                this.toast.showError('ORG.TOAST.DEFAULTORGNOTFOUND', false, true);
+              }
             })
             .catch((error) => {
               this.toast.showError(error);
@@ -210,7 +269,7 @@ export class OrgDetailComponent implements OnInit, OnDestroy {
         this.metadata = resp.resultList.map((md) => {
           return {
             key: md.key,
-            value: Buffer.from(md.value as string, 'base64').toString('ascii'),
+            value: Buffer.from(md.value as string, 'base64').toString('utf-8'),
           };
         });
       })

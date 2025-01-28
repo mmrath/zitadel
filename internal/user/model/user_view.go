@@ -6,9 +6,8 @@ import (
 	"golang.org/x/text/language"
 
 	"github.com/zitadel/zitadel/internal/domain"
-	"github.com/zitadel/zitadel/internal/errors"
 	"github.com/zitadel/zitadel/internal/eventstore/v1/models"
-	iam_model "github.com/zitadel/zitadel/internal/iam/model"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 type UserView struct {
@@ -41,6 +40,7 @@ type HumanView struct {
 	Gender                   Gender
 	Email                    string
 	IsEmailVerified          bool
+	VerifiedEmail            string
 	Phone                    string
 	IsPhoneVerified          bool
 	Country                  string
@@ -49,6 +49,8 @@ type HumanView struct {
 	Region                   string
 	StreetAddress            string
 	OTPState                 MFAState
+	OTPSMSAdded              bool
+	OTPEmailAdded            bool
 	U2FTokens                []*WebAuthNView
 	PasswordlessTokens       []*WebAuthNView
 	MFAMaxSetUp              domain.MFALevel
@@ -94,6 +96,7 @@ const (
 	UserSearchKeyType
 	UserSearchKeyPreferredLoginName
 	UserSearchKeyInstanceID
+	UserSearchOwnerRemoved
 )
 
 type UserSearchQuery struct {
@@ -134,7 +137,7 @@ const (
 
 func (r *UserSearchRequest) EnsureLimit(limit uint64) error {
 	if r.Limit > limit {
-		return errors.ThrowInvalidArgument(nil, "SEARCH-zz62F", "Errors.Limit.ExceedsDefault")
+		return zerrors.ThrowInvalidArgument(nil, "SEARCH-zz62F", "Errors.Limit.ExceedsDefault")
 	}
 	if r.Limit == 0 {
 		r.Limit = limit
@@ -155,43 +158,57 @@ func (u *UserView) MFATypesSetupPossible(level domain.MFALevel, policy *domain.L
 		if policy.HasSecondFactors() {
 			for _, mfaType := range policy.SecondFactors {
 				switch mfaType {
-				case domain.SecondFactorTypeOTP:
+				case domain.SecondFactorTypeTOTP:
 					if u.OTPState != MFAStateReady {
-						types = append(types, domain.MFATypeOTP)
+						types = append(types, domain.MFATypeTOTP)
 					}
 				case domain.SecondFactorTypeU2F:
 					types = append(types, domain.MFATypeU2F)
+				case domain.SecondFactorTypeOTPSMS:
+					if !u.OTPSMSAdded {
+						types = append(types, domain.MFATypeOTPSMS)
+					}
+				case domain.SecondFactorTypeOTPEmail:
+					if !u.OTPEmailAdded {
+						types = append(types, domain.MFATypeOTPEmail)
+					}
 				}
 			}
 		}
-		//PLANNED: add sms
 	}
 	return types
 }
 
-func (u *UserView) MFATypesAllowed(level domain.MFALevel, policy *domain.LoginPolicy) ([]domain.MFAType, bool) {
+func (u *UserView) MFATypesAllowed(level domain.MFALevel, policy *domain.LoginPolicy, isInternalAuthentication bool) ([]domain.MFAType, bool) {
 	types := make([]domain.MFAType, 0)
 	required := true
 	switch level {
 	default:
-		required = policy.ForceMFA
+		required = domain.RequiresMFA(policy.ForceMFA, policy.ForceMFALocalOnly, isInternalAuthentication)
 		fallthrough
 	case domain.MFALevelSecondFactor:
 		if policy.HasSecondFactors() {
 			for _, mfaType := range policy.SecondFactors {
 				switch mfaType {
-				case domain.SecondFactorTypeOTP:
+				case domain.SecondFactorTypeTOTP:
 					if u.OTPState == MFAStateReady {
-						types = append(types, domain.MFATypeOTP)
+						types = append(types, domain.MFATypeTOTP)
 					}
 				case domain.SecondFactorTypeU2F:
 					if u.IsU2FReady() {
 						types = append(types, domain.MFATypeU2F)
 					}
+				case domain.SecondFactorTypeOTPSMS:
+					if u.OTPSMSAdded {
+						types = append(types, domain.MFATypeOTPSMS)
+					}
+				case domain.SecondFactorTypeOTPEmail:
+					if u.OTPEmailAdded {
+						types = append(types, domain.MFATypeOTPEmail)
+					}
 				}
 			}
 		}
-		//PLANNED: add sms
 	}
 	return types, required
 }
@@ -214,23 +231,9 @@ func (u *UserView) IsPasswordlessReady() bool {
 	return false
 }
 
-func (u *UserView) HasRequiredOrgMFALevel(policy *iam_model.LoginPolicyView) bool {
-	if !policy.ForceMFA {
-		return true
-	}
-	switch u.MFAMaxSetUp {
-	case domain.MFALevelSecondFactor:
-		return policy.HasSecondFactors()
-	case domain.MFALevelMultiFactor:
-		return policy.HasMultiFactors()
-	default:
-		return false
-	}
-}
-
 func (u *UserView) GetProfile() (*Profile, error) {
 	if u.HumanView == nil {
-		return nil, errors.ThrowPreconditionFailed(nil, "MODEL-WLTce", "Errors.User.NotHuman")
+		return nil, zerrors.ThrowPreconditionFailed(nil, "MODEL-WLTce", "Errors.User.NotHuman")
 	}
 	return &Profile{
 		ObjectRoot: models.ObjectRoot{
@@ -254,7 +257,7 @@ func (u *UserView) GetProfile() (*Profile, error) {
 
 func (u *UserView) GetPhone() (*Phone, error) {
 	if u.HumanView == nil {
-		return nil, errors.ThrowPreconditionFailed(nil, "MODEL-him4a", "Errors.User.NotHuman")
+		return nil, zerrors.ThrowPreconditionFailed(nil, "MODEL-him4a", "Errors.User.NotHuman")
 	}
 	return &Phone{
 		ObjectRoot: models.ObjectRoot{
@@ -271,7 +274,7 @@ func (u *UserView) GetPhone() (*Phone, error) {
 
 func (u *UserView) GetEmail() (*Email, error) {
 	if u.HumanView == nil {
-		return nil, errors.ThrowPreconditionFailed(nil, "MODEL-PWd6K", "Errors.User.NotHuman")
+		return nil, zerrors.ThrowPreconditionFailed(nil, "MODEL-PWd6K", "Errors.User.NotHuman")
 	}
 	return &Email{
 		ObjectRoot: models.ObjectRoot{
@@ -288,7 +291,7 @@ func (u *UserView) GetEmail() (*Email, error) {
 
 func (u *UserView) GetAddress() (*Address, error) {
 	if u.HumanView == nil {
-		return nil, errors.ThrowPreconditionFailed(nil, "MODEL-DN61m", "Errors.User.NotHuman")
+		return nil, zerrors.ThrowPreconditionFailed(nil, "MODEL-DN61m", "Errors.User.NotHuman")
 	}
 	return &Address{
 		ObjectRoot: models.ObjectRoot{

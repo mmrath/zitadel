@@ -1,14 +1,12 @@
-@use '@angular/material' as mat;
-
 @mixin nav-theme($theme) {
   $primary: map-get($theme, primary);
   $warn: map-get($theme, warn);
   $background: map-get($theme, background);
   $accent: map-get($theme, accent);
-  $primary-color: mat.get-color-from-palette($primary, 500);
+  $primary-color: map-get($primary, 500);
 
-  $warn-color: mat.get-color-from-palette($warn, 500);
-  $accent-color: mat.get-color-from-palette($accent, 500);
+  $warn-color: map-get($warn, 500);
+  $accent-color: map-get($accent, 500);
   $foreground: map-get($theme, foreground);
   $is-dark-theme: map-get($theme, is-dark);
   $back: map-get($background, background);
@@ -56,7 +54,7 @@
           font-size: 14px;
           line-height: 14px;
           padding: 0.4rem 12px;
-          color: mat.get-color-from-palette($foreground, text) !important;
+          color: map-get($foreground, text);
           transition: all 0.2s ease;
           text-decoration: none;
           border-radius: 50vw;
@@ -64,6 +62,8 @@
           margin: 0.25rem 2px;
           white-space: nowrap;
           position: relative;
+          box-sizing: border-box;
+          height: 27px;
 
           .c_label {
             display: flex;
@@ -72,7 +72,18 @@
 
             .count {
               display: none;
+              align-items: center;
+              justify-content: center;
+              height: 17px;
+              width: 17px;
+              border-radius: 50%;
+              padding: 2px;
+              margin: -2px -9px -2px 8px;
               margin-left: 6px;
+              background-color: if($is-dark-theme, #ffffff20, #00000020);
+              line-height: 18px;
+              font-size: 11px;
+              transition: background 0.2s ease;
             }
           }
 
@@ -92,11 +103,12 @@
 
           &.active {
             background-color: $primary-color;
-            color: mat.get-color-from-palette($foreground, toolbar-items) !important;
+            color: map-get($primary, default-contrast);
 
             .c_label {
               .count {
                 display: inline-block;
+                background-color: if($is-dark-theme, #00000020, #ffffff20);
               }
             }
           }
@@ -104,8 +116,8 @@
       }
     }
 
-    .mat-menu-content,
-    .mat-menu-panel {
+    .mat-mdc-menu-content,
+    .mat-mdc-menu-panel {
       background-color: $back;
       border-radius: 0.5rem;
 
@@ -167,8 +179,36 @@
     flex: 1;
   }
 
+  .progress-bar {
+    margin-right: 0.5rem;
+    width: 100px;
+    min-width: 50px;
+    background: if($is-dark-theme, #ffffff20, #00000010);
+    border: none;
+    padding: 2px;
+    border-radius: 50vw;
+    cursor: pointer;
+    display: flex;
+
+    &:hover {
+      background: if($is-dark-theme, #ffffff, $primary-color);
+      transition: background ease 0.15s;
+    }
+
+    .progress-div {
+      display: block;
+      height: 100%;
+      width: 100%;
+
+      .progress {
+        border-radius: 50vw;
+      }
+    }
+  }
+
   .nav-shortcut-action-key {
     display: flex;
+    flex-shrink: 0;
     align-items: center;
     justify-content: center;
     font-size: 12px;
@@ -198,4 +238,10 @@
       opacity: 1;
     }
   }
+}
+
+.onboarding_card {
+  border-radius: 0.5rem;
+  box-shadow: 0 0 15px 0 rgb(0 0 0 / 10%);
+  border: 1px solid rgba(#8795a1, 0.2);
 }

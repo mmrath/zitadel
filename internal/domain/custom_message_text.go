@@ -4,6 +4,7 @@ import (
 	"golang.org/x/text/language"
 
 	"github.com/zitadel/zitadel/internal/eventstore/v1/models"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 const (
@@ -11,8 +12,12 @@ const (
 	PasswordResetMessageType            = "PasswordReset"
 	VerifyEmailMessageType              = "VerifyEmail"
 	VerifyPhoneMessageType              = "VerifyPhone"
+	VerifySMSOTPMessageType             = "VerifySMSOTP"
+	VerifyEmailOTPMessageType           = "VerifyEmailOTP"
 	DomainClaimedMessageType            = "DomainClaimed"
 	PasswordlessRegistrationMessageType = "PasswordlessRegistration"
+	PasswordChangeMessageType           = "PasswordChange"
+	InviteUserMessageType               = "InviteUser"
 	MessageTitle                        = "Title"
 	MessagePreHeader                    = "PreHeader"
 	MessageSubject                      = "Subject"
@@ -21,15 +26,6 @@ const (
 	MessageButtonText                   = "ButtonText"
 	MessageFooterText                   = "Footer"
 )
-
-type MessageTexts struct {
-	InitCode                 CustomMessageText
-	PasswordReset            CustomMessageText
-	VerifyEmail              CustomMessageText
-	VerifyPhone              CustomMessageText
-	DomainClaimed            CustomMessageText
-	PasswordlessRegistration CustomMessageText
-}
 
 type CustomMessageText struct {
 	models.ObjectRoot
@@ -47,26 +43,14 @@ type CustomMessageText struct {
 	FooterText      string
 }
 
-func (m *CustomMessageText) IsValid() bool {
-	return m.MessageTextType != "" && m.Language != language.Und
-}
-
-func (m *MessageTexts) GetMessageTextByType(msgType string) *CustomMessageText {
-	switch msgType {
-	case InitCodeMessageType:
-		return &m.InitCode
-	case PasswordResetMessageType:
-		return &m.PasswordReset
-	case VerifyEmailMessageType:
-		return &m.VerifyEmail
-	case VerifyPhoneMessageType:
-		return &m.VerifyPhone
-	case DomainClaimedMessageType:
-		return &m.DomainClaimed
-	case PasswordlessRegistrationMessageType:
-		return &m.PasswordlessRegistration
+func (m *CustomMessageText) IsValid(supportedLanguages []language.Tag) error {
+	if m.MessageTextType == "" {
+		return zerrors.ThrowInvalidArgument(nil, "INSTANCE-kd9fs", "Errors.CustomMessageText.Invalid")
 	}
-	return nil
+	if err := LanguageIsDefined(m.Language); err != nil {
+		return err
+	}
+	return LanguagesAreSupported(supportedLanguages, m.Language)
 }
 
 func IsMessageTextType(textType string) bool {
@@ -74,6 +58,10 @@ func IsMessageTextType(textType string) bool {
 		textType == PasswordResetMessageType ||
 		textType == VerifyEmailMessageType ||
 		textType == VerifyPhoneMessageType ||
+		textType == VerifySMSOTPMessageType ||
+		textType == VerifyEmailOTPMessageType ||
 		textType == DomainClaimedMessageType ||
-		textType == PasswordlessRegistrationMessageType
+		textType == PasswordlessRegistrationMessageType ||
+		textType == PasswordChangeMessageType ||
+		textType == InviteUserMessageType
 }

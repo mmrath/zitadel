@@ -1,9 +1,6 @@
 package command
 
 import (
-	"encoding/base64"
-
-	"github.com/zitadel/zitadel/internal/crypto"
 	"github.com/zitadel/zitadel/internal/domain"
 	"github.com/zitadel/zitadel/internal/repository/user"
 )
@@ -81,16 +78,6 @@ func writeModelToAddress(wm *HumanAddressWriteModel) *domain.Address {
 	}
 }
 
-func writeModelToMachine(wm *MachineWriteModel) *domain.Machine {
-	return &domain.Machine{
-		ObjectRoot:  writeModelToObjectRoot(wm.WriteModel),
-		Username:    wm.UserName,
-		Name:        wm.Name,
-		Description: wm.Description,
-		State:       wm.UserState,
-	}
-}
-
 func keyWriteModelToMachineKey(wm *MachineKeyWriteModel) *domain.MachineKey {
 	return &domain.MachineKey{
 		ObjectRoot:     writeModelToObjectRoot(wm.WriteModel),
@@ -100,29 +87,9 @@ func keyWriteModelToMachineKey(wm *MachineKeyWriteModel) *domain.MachineKey {
 	}
 }
 
-func personalTokenWriteModelToToken(wm *PersonalAccessTokenWriteModel, algorithm crypto.EncryptionAlgorithm) (*domain.Token, string, error) {
-	encrypted, err := algorithm.Encrypt([]byte(wm.TokenID + ":" + wm.AggregateID))
-	if err != nil {
-		return nil, "", err
-	}
-	return &domain.Token{
-		ObjectRoot: writeModelToObjectRoot(wm.WriteModel),
-		TokenID:    wm.TokenID,
-		Expiration: wm.ExpirationDate,
-	}, base64.RawURLEncoding.EncodeToString(encrypted), nil
-}
-
-func readModelToU2FTokens(wm *HumanU2FTokensReadModel) []*domain.WebAuthNToken {
-	tokens := make([]*domain.WebAuthNToken, len(wm.WebAuthNTokens))
-	for i, token := range wm.WebAuthNTokens {
-		tokens[i] = writeModelToWebAuthN(token)
-	}
-	return tokens
-}
-
-func readModelToPasswordlessTokens(wm *HumanPasswordlessTokensReadModel) []*domain.WebAuthNToken {
-	tokens := make([]*domain.WebAuthNToken, len(wm.WebAuthNTokens))
-	for i, token := range wm.WebAuthNTokens {
+func readModelToWebAuthNTokens(readModel HumanWebAuthNTokensReadModel) []*domain.WebAuthNToken {
+	tokens := make([]*domain.WebAuthNToken, len(readModel.GetWebAuthNTokens()))
+	for i, token := range readModel.GetWebAuthNTokens() {
 		tokens[i] = writeModelToWebAuthN(token)
 	}
 	return tokens
@@ -140,10 +107,14 @@ func writeModelToWebAuthN(wm *HumanWebAuthNWriteModel) *domain.WebAuthNToken {
 		SignCount:         wm.SignCount,
 		WebAuthNTokenName: wm.WebAuthNTokenName,
 		State:             wm.State,
+		RPID:              wm.RPID,
 	}
 }
 
 func authRequestDomainToAuthRequestInfo(authRequest *domain.AuthRequest) *user.AuthRequestInfo {
+	if authRequest == nil {
+		return nil
+	}
 	info := &user.AuthRequestInfo{
 		ID:                  authRequest.ID,
 		UserAgentID:         authRequest.AgentID,

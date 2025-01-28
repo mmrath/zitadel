@@ -28,6 +28,10 @@
     <button data-e2e="rename" mat-menu-item (click)="renameOrg()">
       {{ 'ORG.PAGES.RENAME.ACTION' | translate }}
     </button>
+
+    <button data-e2e="delete" mat-menu-item (click)="deleteOrg()">
+      {{ 'ORG.PAGES.DELETE' | translate }}
+    </button>
   </ng-container>
   <cnsl-contributors
     topContributors
@@ -52,6 +56,7 @@
     </ng-container>
 
     <cnsl-metadata
+      [description]="'DESCRIPTIONS.ORG.METADATA' | translate"
       [metadata]="metadata"
       [disabled]="(['org.write'] | hasRole | async) === false"
       (editClicked)="editMetadata()"

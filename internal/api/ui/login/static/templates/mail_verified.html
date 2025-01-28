@@ -13,11 +13,7 @@
   <input type="hidden" name="authRequestID" value="{{ .AuthReqID }}" />
   <input type="hidden" name="orgID" value="{{ .OrgID }}" />
 
-  <div class="lgn-actions">
-    <a class="lgn-stroked-button" href="{{ loginUrl }}">
-      {{t "EmailVerificationDone.CancelButtonText"}}
-    </a>
-    <span class="fill-space"></span>
+  <div class="lgn-actions lgn-justify-center">
     <button class="lgn-raised-button lgn-primary" type="submit">
       {{if .AuthReqID }} {{t "EmailVerificationDone.NextButtonText"}} {{else}}
       {{t "EmailVerificationDone.LoginButtonText"}} {{end}}

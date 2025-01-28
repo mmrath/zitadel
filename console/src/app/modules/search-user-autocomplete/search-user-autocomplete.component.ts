@@ -26,13 +26,14 @@ export enum UserTarget {
   EXTERNAL = 'external',
 }
 
+const USER_LIMIT = 25;
+
 @Component({
   selector: 'cnsl-search-user-autocomplete',
   templateUrl: './search-user-autocomplete.component.html',
   styleUrls: ['./search-user-autocomplete.component.scss'],
 })
 export class SearchUserAutocompleteComponent implements OnInit, AfterContentChecked {
-  public selectable: boolean = true;
   public removable: boolean = true;
   public addOnBlur: boolean = true;
   public separatorKeysCodes: number[] = [ENTER, COMMA];
@@ -54,13 +55,26 @@ export class SearchUserAutocompleteComponent implements OnInit, AfterContentChec
   @Input() public singleOutput: boolean = false;
 
   private unsubscribed$: Subject<void> = new Subject();
-  constructor(private userService: ManagementService, private toast: ToastService, private cdref: ChangeDetectorRef) {}
+  constructor(
+    private userService: ManagementService,
+    private toast: ToastService,
+    private cdref: ChangeDetectorRef,
+  ) {}
 
   public ngOnInit(): void {
     if (this.target === UserTarget.EXTERNAL) {
       this.filteredUsers = [];
       this.unsubscribed$.next(); // clear old subscription
     } else if (this.target === UserTarget.SELF) {
+      // feat-3916 show users as soon as I am in the input field of the user
+      const query = new SearchQuery();
+      const lnQuery = new LoginNameQuery();
+      lnQuery.setMethod(TextQueryMethod.TEXT_QUERY_METHOD_STARTS_WITH_IGNORE_CASE);
+      query.setLoginNameQuery(lnQuery);
+      this.userService.listUsers(USER_LIMIT, 0, [query]).then((users) => {
+        this.filteredUsers = users.resultList;
+      });
+
       this.getFilteredResults(); // new subscription
     }
   }
@@ -85,7 +99,7 @@ export class SearchUserAutocompleteComponent implements OnInit, AfterContentChec
           query.setLoginNameQuery(lnQuery);
 
           if (this.target === UserTarget.SELF) {
-            return from(this.userService.listUsers(10, 0, [query]));
+            return from(this.userService.listUsers(USER_LIMIT, 0, [query]));
           } else {
             return of();
           }
@@ -94,7 +108,10 @@ export class SearchUserAutocompleteComponent implements OnInit, AfterContentChec
       .subscribe((userresp: ListUsersResponse.AsObject | unknown) => {
         this.isLoading = false;
         if (this.target === UserTarget.SELF && userresp) {
-          this.filteredUsers = (userresp as ListUsersResponse.AsObject).resultList;
+          const results = (userresp as ListUsersResponse.AsObject).resultList;
+          this.filteredUsers = results.filter((filteredUser) => {
+            return !this.users.map((u) => u.id).includes(filteredUser.id);
+          });
         }
       });
   }

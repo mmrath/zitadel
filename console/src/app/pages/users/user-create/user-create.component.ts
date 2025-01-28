@@ -1,10 +1,8 @@
 import { Location } from '@angular/common';
-import { ChangeDetectorRef, Component, OnDestroy, ViewChild } from '@angular/core';
+import { ChangeDetectorRef, Component, OnDestroy, OnInit, ViewChild } from '@angular/core';
 import { AbstractControl, UntypedFormBuilder, UntypedFormGroup, ValidatorFn, Validators } from '@angular/forms';
 import { Router } from '@angular/router';
-import parsePhoneNumber from 'libphonenumber-js';
-import { Subject } from 'rxjs';
-import { debounceTime, takeUntil } from 'rxjs/operators';
+import { Subject, debounceTime, Observable } from 'rxjs';
 import { AddHumanUserRequest } from 'src/app/proto/generated/zitadel/management_pb';
 import { Domain } from 'src/app/proto/generated/zitadel/org_pb';
 import { PasswordComplexityPolicy } from 'src/app/proto/generated/zitadel/policy_pb';
@@ -13,37 +11,35 @@ import { Breadcrumb, BreadcrumbService, BreadcrumbType } from 'src/app/services/
 import { ManagementService } from 'src/app/services/mgmt.service';
 import { ToastService } from 'src/app/services/toast.service';
 
-import { lowerCaseValidator, numberValidator, symbolValidator, upperCaseValidator } from '../../validators';
-
-function passwordConfirmValidator(c: AbstractControl): any {
-  if (!c.parent || !c) {
-    return;
-  }
-  const pwd = c.parent.get('password');
-  const cpwd = c.parent.get('confirmPassword');
-
-  if (!pwd || !cpwd) {
-    return;
-  }
-  if (pwd.value !== cpwd.value) {
-    return {
-      invalid: true,
-      notequal: {
-        valid: false,
-      },
-    };
-  }
-}
+import { CountryCallingCodesService, CountryPhoneCode } from 'src/app/services/country-calling-codes.service';
+import { formatPhone } from 'src/app/utils/formatPhone';
+import {
+  containsLowerCaseValidator,
+  containsNumberValidator,
+  containsSymbolValidator,
+  containsUpperCaseValidator,
+  emailValidator,
+  minLengthValidator,
+  passwordConfirmValidator,
+  phoneValidator,
+  requiredValidator,
+} from '../../../modules/form-field/validators/validators';
+import { LanguagesService } from '../../../services/languages.service';
 
 @Component({
   selector: 'cnsl-user-create',
   templateUrl: './user-create.component.html',
   styleUrls: ['./user-create.component.scss'],
 })
-export class UserCreateComponent implements OnDestroy {
+export class UserCreateComponent implements OnInit, OnDestroy {
   public user: AddHumanUserRequest.AsObject = new AddHumanUserRequest().toObject();
   public genders: Gender[] = [Gender.GENDER_FEMALE, Gender.GENDER_MALE, Gender.GENDER_UNSPECIFIED];
-  public languages: string[] = ['de', 'en', 'it', 'fr'];
+  public selected: CountryPhoneCode | undefined = {
+    countryCallingCode: '1',
+    countryCode: 'US',
+    countryName: 'United States of America',
+  };
+  public countryPhoneCodes: CountryPhoneCode[] = [];
   public userForm!: UntypedFormGroup;
   public pwdForm!: UntypedFormGroup;
   private destroyed$: Subject<void> = new Subject();
@@ -63,6 +59,8 @@ export class UserCreateComponent implements OnDestroy {
     private mgmtService: ManagementService,
     private changeDetRef: ChangeDetectorRef,
     private _location: Location,
+    private countryCallingCodesService: CountryCallingCodesService,
+    public langSvc: LanguagesService,
     breadcrumbService: BreadcrumbService,
   ) {
     breadcrumbService.setBreadcrumb([
@@ -71,7 +69,6 @@ export class UserCreateComponent implements OnDestroy {
         routerLink: ['/org'],
       }),
     ]);
-
     this.loading = true;
     this.loadOrg();
     this.mgmtService
@@ -90,10 +87,6 @@ export class UserCreateComponent implements OnDestroy {
         this.loading = false;
         this.changeDetRef.detectChanges();
       });
-
-    this.mgmtService.getSupportedLanguages().then((lang) => {
-      this.languages = lang.languagesList;
-    });
   }
 
   public close(): void {
@@ -110,40 +103,40 @@ export class UserCreateComponent implements OnDestroy {
 
   private initForm(): void {
     this.userForm = this.fb.group({
-      email: ['', [Validators.required, Validators.email]],
-      userName: ['', [Validators.required, Validators.minLength(2)]],
-      firstName: ['', Validators.required],
-      lastName: ['', Validators.required],
+      email: ['', [requiredValidator, emailValidator]],
+      userName: ['', [requiredValidator, minLengthValidator(2)]],
+      firstName: ['', requiredValidator],
+      lastName: ['', requiredValidator],
       nickName: [''],
       gender: [],
       preferredLanguage: [''],
-      phone: [''],
+      phone: ['', phoneValidator],
       isVerified: [false, []],
     });
 
-    const validators: Validators[] = [Validators.required];
+    const validators: Validators[] = [requiredValidator];
 
     this.mgmtService.getPasswordComplexityPolicy().then((data) => {
       if (data.policy) {
         this.policy = data.policy;
 
         if (this.policy.minLength) {
-          validators.push(Validators.minLength(this.policy.minLength));
+          validators.push(minLengthValidator(this.policy.minLength));
         }
         if (this.policy.hasLowercase) {
-          validators.push(lowerCaseValidator);
+          validators.push(containsLowerCaseValidator);
         }
         if (this.policy.hasUppercase) {
-          validators.push(upperCaseValidator);
+          validators.push(containsUpperCaseValidator);
         }
         if (this.policy.hasNumber) {
-          validators.push(numberValidator);
+          validators.push(containsNumberValidator);
         }
         if (this.policy.hasSymbol) {
-          validators.push(symbolValidator);
+          validators.push(containsSymbolValidator);
         }
         const pwdValidators = [...validators] as ValidatorFn[];
-        const confirmPwdValidators = [...validators, passwordConfirmValidator] as ValidatorFn[];
+        const confirmPwdValidators = [requiredValidator, passwordConfirmValidator()] as ValidatorFn[];
 
         this.pwdForm = this.fb.group({
           password: ['', pwdValidators],
@@ -152,14 +145,11 @@ export class UserCreateComponent implements OnDestroy {
       }
     });
 
-    this.userForm.controls['phone'].valueChanges.pipe(takeUntil(this.destroyed$), debounceTime(300)).subscribe((value) => {
-      const phoneNumber = parsePhoneNumber(value ?? '', 'CH');
+    this.phone?.valueChanges.pipe(debounceTime(200)).subscribe((value: string) => {
+      const phoneNumber = formatPhone(value);
       if (phoneNumber) {
-        const formmatted = phoneNumber.formatInternational();
-        const country = phoneNumber.country;
-        if (this.phone && country && this.phone.value && this.phone.value !== formmatted) {
-          this.phone.setValue(formmatted);
-        }
+        this.selected = this.countryPhoneCodes.find((code) => code.countryCode === phoneNumber.country);
+        this.phone?.setValue(phoneNumber.phone);
       }
     });
   }
@@ -190,7 +180,12 @@ export class UserCreateComponent implements OnDestroy {
     }
 
     if (this.phone && this.phone.value) {
-      humanReq.setPhone(new AddHumanUserRequest.Phone().setPhone(this.phone.value));
+      // Try to parse number and format it according to country
+      const phoneNumber = formatPhone(this.phone.value);
+      if (phoneNumber) {
+        this.selected = this.countryPhoneCodes.find((code) => code.countryCode === phoneNumber.country);
+        humanReq.setPhone(new AddHumanUserRequest.Phone().setPhone(phoneNumber.phone));
+      }
     }
 
     this.mgmtService
@@ -198,12 +193,23 @@ export class UserCreateComponent implements OnDestroy {
       .then((data) => {
         this.loading = false;
         this.toast.showInfo('USER.TOAST.CREATED', true);
-        this.router.navigate(['users', data.userId]);
+        this.router.navigate(['users', data.userId], { queryParams: { new: true } });
       })
       .catch((error) => {
         this.loading = false;
         this.toast.showError(error);
       });
+  }
+
+  public setCountryCallingCode(): void {
+    let value = (this.phone?.value as string) || '';
+    this.countryPhoneCodes.forEach((code) => (value = value.replace(`+${code.countryCallingCode}`, '')));
+    value = value.trim();
+    this.phone?.setValue('+' + this.selected?.countryCallingCode + ' ' + value);
+  }
+
+  ngOnInit(): void {
+    this.countryPhoneCodes = this.countryCallingCodesService.getCountryCallingCodes();
   }
 
   ngOnDestroy(): void {
@@ -260,5 +266,15 @@ export class UserCreateComponent implements OnDestroy {
     } else {
       return;
     }
+  }
+
+  public compareCountries(i1: CountryPhoneCode, i2: CountryPhoneCode) {
+    return (
+      i1 &&
+      i2 &&
+      i1.countryCallingCode === i2.countryCallingCode &&
+      i1.countryCode == i2.countryCode &&
+      i1.countryName == i2.countryName
+    );
   }
 }

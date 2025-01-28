@@ -4,6 +4,7 @@ import (
 	"golang.org/x/text/language"
 
 	es_models "github.com/zitadel/zitadel/internal/eventstore/v1/models"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 type Profile struct {
@@ -19,8 +20,17 @@ type Profile struct {
 	LoginNames         []string
 }
 
-func (p *Profile) IsValid() bool {
-	return p.FirstName != "" && p.LastName != ""
+func (p *Profile) Validate() error {
+	if p == nil {
+		return zerrors.ThrowInvalidArgument(nil, "PROFILE-GPY3p", "Errors.User.Profile.Empty")
+	}
+	if p.FirstName == "" {
+		return zerrors.ThrowInvalidArgument(nil, "PROFILE-RF5z2", "Errors.User.Profile.FirstNameEmpty")
+	}
+	if p.LastName == "" {
+		return zerrors.ThrowInvalidArgument(nil, "PROFILE-DSUkN", "Errors.User.Profile.LastNameEmpty")
+	}
+	return nil
 }
 
 func AvatarURL(prefix, resourceOwner, key string) string {

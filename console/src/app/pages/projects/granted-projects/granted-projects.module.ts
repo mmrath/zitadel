@@ -10,7 +10,6 @@ import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { MatSelectModule } from '@angular/material/select';
 import { MatSortModule } from '@angular/material/sort';
 import { MatTableModule } from '@angular/material/table';
-import { MatTabsModule } from '@angular/material/tabs';
 import { MatTooltipModule } from '@angular/material/tooltip';
 import { TranslateModule } from '@ngx-translate/core';
 import { HasRoleModule } from 'src/app/directives/has-role/has-role.module';
@@ -24,7 +23,6 @@ import { MetaLayoutModule } from 'src/app/modules/meta-layout/meta-layout.module
 import { PaginatorModule } from 'src/app/modules/paginator/paginator.module';
 import { ProjectRolesTableModule } from 'src/app/modules/project-roles-table/project-roles-table.module';
 import { RefreshTableModule } from 'src/app/modules/refresh-table/refresh-table.module';
-import { SharedModule } from 'src/app/modules/shared/shared.module';
 import { TopViewModule } from 'src/app/modules/top-view/top-view.module';
 import { UserGrantsModule } from 'src/app/modules/user-grants/user-grants.module';
 import { HasRolePipeModule } from 'src/app/pipes/has-role-pipe/has-role-pipe.module';
@@ -52,7 +50,6 @@ import { GrantedProjectsRoutingModule } from './granted-projects-routing.module'
     MatIconModule,
     MatSelectModule,
     MatButtonModule,
-    MatTabsModule,
     MatProgressSpinnerModule,
     MetaLayoutModule,
     MatProgressBarModule,
@@ -64,7 +61,6 @@ import { GrantedProjectsRoutingModule } from './granted-projects-routing.module'
     HasRolePipeModule,
     TimestampToDatePipeModule,
     TopViewModule,
-    SharedModule,
     InfoRowModule,
     LocalizedDatePipeModule,
     MemberCreateDialogModule,
@@ -72,4 +68,4 @@ import { GrantedProjectsRoutingModule } from './granted-projects-routing.module'
     RefreshTableModule,
   ],
 })
-export class GrantedProjectsModule {}
+export default class GrantedProjectsModule {}

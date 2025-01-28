@@ -1,5 +1,6 @@
 ---
-title: Authenticated MongoDB Charts
+title: Embed Authenticated MongoDB Charts Using ZITADEL
+sidebar_label: Authenticated MongoDB Charts
 ---
 
 This integration guide shows how you can embed authenticated MongoDB Charts in your web application using ZITADEL as authentication provider.
@@ -12,7 +13,7 @@ You will need to provide some information about your app. We recommend creating 
 1. Navigate to your Project
 2. Add a new application at the top of the page.
 3. Select Web application type and continue.
-4. Use [Authorization Code](../../apis/openidoauth/grant-types#authorization-code) in combination with [Proof Key for Code Exchange (PKCE)](../../apis/openidoauth/grant-types#proof-key-for-code-exchange).
+4. Use [Authorization Code](/apis/openidoauth/grant-types#authorization-code) in combination with [Proof Key for Code Exchange (PKCE)](/apis/openidoauth/grant-types#proof-key-for-code-exchange).
 5. Skip the redirect settings and confirm the app creation
 6. Copy the client ID, you will need to tell MongoDB Charts about it.
 7. When you created the app, expand its _OIDC Configuration_ section, change the _Auth Token Type_ to _JWT_ and save the change.
@@ -28,7 +29,7 @@ Configure ZITADEL as your _Custom JWT Provider_ following the [MongoDB docs](htt
 Configure the following values:
 - Signing Algorithm: RS256
 - Signing Key: JWK or JWKS URL
-- JWKS: https://{your_domain}.zitadel.cloud/oauth/v2/keys
+- JWKS: https://$CUSTOM-DOMAIN/oauth/v2/keys
 - Audience: Your app's client ID which you copied when you created the ZITADEL app
 
 Your configuration should look similar to this:
@@ -39,7 +40,7 @@ Your configuration should look similar to this:
 
 Embed a chart into your application now, following the corresponding [MongoDB docs](https://docs.mongodb.com/charts/saas/embed-chart-jwt-auth/).
 
-If you've done the [Angular Quickstart](../../examples/login/angular.md), your code could look something like this:
+If you've done the [Angular Quickstart](/examples/login/angular.md), your code could look something like this:
 
 ```html
 <!-- chart.component.html -->

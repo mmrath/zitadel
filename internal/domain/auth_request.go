@@ -1,12 +1,13 @@
 package domain
 
 import (
+	"slices"
 	"strings"
 	"time"
 
 	"golang.org/x/text/language"
 
-	"github.com/zitadel/zitadel/internal/errors"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 type AuthRequest struct {
@@ -34,6 +35,7 @@ type AuthRequest struct {
 	AvatarKey                string
 	PresignedAvatar          string
 	UserOrgID                string
+	PreferredLanguage        *language.Tag
 	RequestedOrgID           string
 	RequestedOrgName         string
 	RequestedPrimaryDomain   string
@@ -42,8 +44,9 @@ type AuthRequest struct {
 	PrivateLabelingSetting   PrivateLabelingSetting
 	SelectedIDPConfigID      string
 	LinkingUsers             []*ExternalUser
-	PossibleSteps            []NextStep
+	PossibleSteps            []NextStep `json:"-"`
 	PasswordVerified         bool
+	IDPLoginChecked          bool
 	MFAsVerified             []MFAType
 	Audience                 []string
 	AuthTime                 time.Time
@@ -53,8 +56,37 @@ type AuthRequest struct {
 	LabelPolicy              *LabelPolicy
 	PrivacyPolicy            *PrivacyPolicy
 	LockoutPolicy            *LockoutPolicy
+	PasswordAgePolicy        *PasswordAgePolicy
 	DefaultTranslations      []*CustomText
 	OrgTranslations          []*CustomText
+	SAMLRequestID            string
+	RequestLocalAuth         bool
+	// orgID the policies were last loaded with
+	policyOrgID string
+	// SessionID is set to the computed sessionID of the login session table
+	SessionID string
+}
+
+func (a *AuthRequest) SetPolicyOrgID(id string) {
+	a.policyOrgID = id
+}
+
+func (a *AuthRequest) PolicyOrgID() string {
+	return a.policyOrgID
+}
+
+func (a *AuthRequest) AuthMethods() []UserAuthMethodType {
+	list := make([]UserAuthMethodType, 0, len(a.MFAsVerified)+2)
+	if a.PasswordVerified {
+		list = append(list, UserAuthMethodTypePassword)
+	}
+	if a.IDPLoginChecked {
+		list = append(list, UserAuthMethodTypeIDP)
+	}
+	for _, mfa := range a.MFAsVerified {
+		list = append(list, mfa.UserAuthMethodType())
+	}
+	return slices.Compact(list)
 }
 
 type ExternalUser struct {
@@ -65,10 +97,10 @@ type ExternalUser struct {
 	FirstName         string
 	LastName          string
 	NickName          string
-	Email             string
+	Email             EmailAddress
 	IsEmailVerified   bool
 	PreferredLanguage language.Tag
-	Phone             string
+	Phone             PhoneNumber
 	IsPhoneVerified   bool
 	Metadatas         []*Metadata
 }
@@ -102,10 +134,29 @@ const (
 type MFAType int
 
 const (
-	MFATypeOTP MFAType = iota
+	MFATypeTOTP MFAType = iota
 	MFATypeU2F
 	MFATypeU2FUserVerification
+	MFATypeOTPSMS
+	MFATypeOTPEmail
 )
+
+func (m MFAType) UserAuthMethodType() UserAuthMethodType {
+	switch m {
+	case MFATypeTOTP:
+		return UserAuthMethodTypeTOTP
+	case MFATypeU2F:
+		return UserAuthMethodTypeU2F
+	case MFATypeU2FUserVerification:
+		return UserAuthMethodTypePasswordless
+	case MFATypeOTPSMS:
+		return UserAuthMethodTypeOTPSMS
+	case MFATypeOTPEmail:
+		return UserAuthMethodTypeOTPEmail
+	default:
+		return UserAuthMethodTypeUnspecified
+	}
+}
 
 type MFALevel int
 
@@ -116,14 +167,27 @@ const (
 	MFALevelMultiFactorCertified
 )
 
+type AuthRequestState int
+
+const (
+	AuthRequestStateUnspecified AuthRequestState = iota
+	AuthRequestStateAdded
+	AuthRequestStateCodeAdded
+	AuthRequestStateCodeExchanged
+	AuthRequestStateFailed
+	AuthRequestStateSucceeded
+)
+
 func NewAuthRequestFromType(requestType AuthRequestType) (*AuthRequest, error) {
 	switch requestType {
 	case AuthRequestTypeOIDC:
 		return &AuthRequest{Request: &AuthRequestOIDC{}}, nil
 	case AuthRequestTypeSAML:
 		return &AuthRequest{Request: &AuthRequestSAML{}}, nil
+	case AuthRequestTypeDevice:
+		return &AuthRequest{Request: &AuthRequestDevice{}}, nil
 	}
-	return nil, errors.ThrowInvalidArgument(nil, "DOMAIN-ds2kl", "invalid request type")
+	return nil, zerrors.ThrowInvalidArgument(nil, "DOMAIN-ds2kl", "invalid request type")
 }
 
 func (a *AuthRequest) WithCurrentInfo(info *BrowserInfo) *AuthRequest {
@@ -183,4 +247,38 @@ func (a *AuthRequest) GetScopeOrgID() string {
 		}
 	}
 	return ""
+}
+
+func (a *AuthRequest) Done() bool {
+	for _, step := range a.PossibleSteps {
+		if step.Type() == NextStepRedirectToCallback {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *AuthRequest) PrivateLabelingOrgID(defaultID string) string {
+	if a.RequestedOrgID != "" {
+		return a.RequestedOrgID
+	}
+	if (a.PrivateLabelingSetting == PrivateLabelingSettingAllowLoginUserResourceOwnerPolicy || a.PrivateLabelingSetting == PrivateLabelingSettingUnspecified) &&
+		a.UserOrgID != "" {
+		return a.UserOrgID
+	}
+	if a.PrivateLabelingSetting != PrivateLabelingSettingUnspecified {
+		return a.ApplicationResourceOwner
+	}
+	return defaultID
+}
+
+func (a *AuthRequest) UserAuthMethodTypes() []UserAuthMethodType {
+	list := make([]UserAuthMethodType, 0, len(a.MFAsVerified)+1)
+	if a.PasswordVerified {
+		list = append(list, UserAuthMethodTypePassword)
+	}
+	for _, mfa := range a.MFAsVerified {
+		list = append(list, mfa.UserAuthMethodType())
+	}
+	return list
 }

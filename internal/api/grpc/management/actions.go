@@ -14,18 +14,18 @@ func (s *Server) ListActions(ctx context.Context, req *mgmt_pb.ListActionsReques
 	if err != nil {
 		return nil, err
 	}
-	actions, err := s.query.SearchActions(ctx, query)
+	actions, err := s.query.SearchActions(ctx, query, false)
 	if err != nil {
 		return nil, err
 	}
 	return &mgmt_pb.ListActionsResponse{
-		Details: obj_grpc.ToListDetails(actions.Count, actions.Sequence, actions.Timestamp),
+		Details: obj_grpc.ToListDetails(actions.Count, actions.Sequence, actions.LastRun),
 		Result:  action_grpc.ActionsToPb(actions.Actions),
 	}, nil
 }
 
 func (s *Server) GetAction(ctx context.Context, req *mgmt_pb.GetActionRequest) (*mgmt_pb.GetActionResponse, error) {
-	action, err := s.query.GetActionByID(ctx, req.Id, authz.GetCtxData(ctx).OrgID)
+	action, err := s.query.GetActionByID(ctx, req.Id, authz.GetCtxData(ctx).OrgID, false)
 	if err != nil {
 		return nil, err
 	}
@@ -65,13 +65,16 @@ func (s *Server) UpdateAction(ctx context.Context, req *mgmt_pb.UpdateActionRequ
 
 func (s *Server) DeactivateAction(ctx context.Context, req *mgmt_pb.DeactivateActionRequest) (*mgmt_pb.DeactivateActionResponse, error) {
 	details, err := s.command.DeactivateAction(ctx, req.Id, authz.GetCtxData(ctx).OrgID)
+	if err != nil {
+		return nil, err
+	}
 	return &mgmt_pb.DeactivateActionResponse{
 		Details: obj_grpc.AddToDetailsPb(
 			details.Sequence,
 			details.EventDate,
 			details.ResourceOwner,
 		),
-	}, err
+	}, nil
 }
 
 func (s *Server) ReactivateAction(ctx context.Context, req *mgmt_pb.ReactivateActionRequest) (*mgmt_pb.ReactivateActionResponse, error) {
