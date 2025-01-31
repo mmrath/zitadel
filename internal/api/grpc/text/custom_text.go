@@ -65,7 +65,7 @@ func CustomLoginTextToPb(text *domain.CustomLoginText) *text_pb.LoginCustomText 
 		ExternalRegistrationUserOverviewText: ExternalRegistrationUserOverviewScreenTextToPb(text.ExternalRegistrationUserOverview),
 		RegistrationOrgText:                  RegistrationOrgScreenTextToPb(text.RegistrationOrg),
 		LinkingUserDoneText:                  LinkingUserDoneScreenTextToPb(text.LinkingUsersDone),
-		ExternalUserNotFoundText:             ExternalUserNotFoundScreenTextToPb(text.ExternalNotFoundOption),
+		ExternalUserNotFoundText:             ExternalUserNotFoundScreenTextToPb(text.ExternalNotFound),
 		SuccessLoginText:                     SuccessLoginScreenTextToPb(text.LoginSuccess),
 		LogoutText:                           LogoutDoneScreenTextToPb(text.LogoutDone),
 		FooterText:                           FooterTextToPb(text.Footer),
@@ -315,6 +315,7 @@ func PasswordChangeScreenTextToPb(text domain.PasswordChangeScreenText) *text_pb
 	return &text_pb.PasswordChangeScreenText{
 		Title:                   text.Title,
 		Description:             text.Description,
+		ExpiredDescription:      text.ExpiredDescription,
 		OldPasswordLabel:        text.OldPasswordLabel,
 		NewPasswordLabel:        text.NewPasswordLabel,
 		NewPasswordConfirmLabel: text.NewPasswordConfirmLabel,
@@ -345,6 +346,7 @@ func RegistrationOptionScreenTextToPb(text domain.RegistrationOptionScreenText) 
 		Description:              text.Description,
 		UserNameButtonText:       text.RegisterUsernamePasswordButtonText,
 		ExternalLoginDescription: text.ExternalLoginDescription,
+		LoginButtonText:          text.LoginButtonText,
 	}
 }
 
@@ -364,7 +366,7 @@ func RegistrationUserScreenTextToPb(text domain.RegistrationUserScreenText) *tex
 		TosAndPrivacyLabel:     text.TOSAndPrivacyLabel,
 		TosConfirm:             text.TOSConfirm,
 		TosLinkText:            text.TOSLinkText,
-		TosConfirmAnd:          text.TOSConfirmAnd,
+		PrivacyConfirm:         text.PrivacyConfirm,
 		PrivacyLinkText:        text.PrivacyLinkText,
 		NextButtonText:         text.NextButtonText,
 		BackButtonText:         text.BackButtonText,
@@ -385,7 +387,7 @@ func ExternalRegistrationUserOverviewScreenTextToPb(text domain.ExternalRegistra
 		TosAndPrivacyLabel: text.TOSAndPrivacyLabel,
 		TosConfirm:         text.TOSConfirm,
 		TosLinkText:        text.TOSLinkText,
-		TosConfirmAnd:      text.TOSConfirmAnd,
+		PrivacyConfirm:     text.PrivacyConfirm,
 		PrivacyLinkText:    text.PrivacyLinkText,
 		NextButtonText:     text.NextButtonText,
 		BackButtonText:     text.BackButtonText,
@@ -406,7 +408,7 @@ func RegistrationOrgScreenTextToPb(text domain.RegistrationOrgScreenText) *text_
 		TosAndPrivacyLabel:   text.TOSAndPrivacyLabel,
 		TosConfirm:           text.TOSConfirm,
 		TosLinkText:          text.TOSLinkText,
-		TosConfirmAnd:        text.TOSConfirmAnd,
+		PrivacyConfirm:       text.PrivacyConfirm,
 		PrivacyLinkText:      text.PrivacyLinkText,
 		SaveButtonText:       text.SaveButtonText,
 	}
@@ -430,7 +432,7 @@ func ExternalUserNotFoundScreenTextToPb(text domain.ExternalUserNotFoundScreenTe
 		TosAndPrivacyLabel:     text.TOSAndPrivacyLabel,
 		TosConfirm:             text.TOSConfirm,
 		TosLinkText:            text.PrivacyLinkText,
-		TosConfirmAnd:          text.TOSConfirmAnd,
+		PrivacyConfirm:         text.PrivacyConfirm,
 		PrivacyLinkText:        text.PrivacyLinkText,
 	}
 }
@@ -457,6 +459,7 @@ func FooterTextToPb(text domain.FooterText) *text_pb.FooterText {
 		Tos:           text.TOS,
 		PrivacyPolicy: text.PrivacyPolicy,
 		Help:          text.Help,
+		SupportEmail:  text.SupportEmail,
 	}
 }
 
@@ -761,6 +764,7 @@ func PasswordlessRegistrationDoneScreenTextPbToDomain(text *text_pb.Passwordless
 		Description:      text.Description,
 		DescriptionClose: text.DescriptionClose,
 		NextButtonText:   text.NextButtonText,
+		CancelButtonText: text.CancelButtonText,
 	}
 }
 
@@ -771,6 +775,7 @@ func PasswordChangeScreenTextPbToDomain(text *text_pb.PasswordChangeScreenText) 
 	return domain.PasswordChangeScreenText{
 		Title:                   text.Title,
 		Description:             text.Description,
+		ExpiredDescription:      text.ExpiredDescription,
 		OldPasswordLabel:        text.OldPasswordLabel,
 		NewPasswordLabel:        text.NewPasswordLabel,
 		NewPasswordConfirmLabel: text.NewPasswordConfirmLabel,
@@ -810,6 +815,7 @@ func RegistrationOptionScreenTextPbToDomain(text *text_pb.RegistrationOptionScre
 		Description:                        text.Description,
 		RegisterUsernamePasswordButtonText: text.UserNameButtonText,
 		ExternalLoginDescription:           text.ExternalLoginDescription,
+		LoginButtonText:                    text.LoginButtonText,
 	}
 }
 
@@ -832,7 +838,7 @@ func RegistrationUserScreenTextPbToDomain(text *text_pb.RegistrationUserScreenTe
 		TOSAndPrivacyLabel:     text.TosAndPrivacyLabel,
 		TOSConfirm:             text.TosConfirm,
 		TOSLinkText:            text.TosLinkText,
-		TOSConfirmAnd:          text.TosConfirmAnd,
+		PrivacyConfirm:         text.PrivacyConfirm,
 		PrivacyLinkText:        text.PrivacyLinkText,
 		NextButtonText:         text.NextButtonText,
 		BackButtonText:         text.BackButtonText,
@@ -856,7 +862,7 @@ func ExternalRegistrationUserOverviewScreenTextPbToDomain(text *text_pb.External
 		TOSAndPrivacyLabel: text.TosAndPrivacyLabel,
 		TOSConfirm:         text.TosConfirm,
 		TOSLinkText:        text.TosLinkText,
-		TOSConfirmAnd:      text.TosConfirmAnd,
+		PrivacyConfirm:     text.PrivacyConfirm,
 		PrivacyLinkText:    text.PrivacyLinkText,
 		NextButtonText:     text.NextButtonText,
 		BackButtonText:     text.BackButtonText,
@@ -880,7 +886,7 @@ func RegistrationOrgScreenTextPbToDomain(text *text_pb.RegistrationOrgScreenText
 		TOSAndPrivacyLabel:   text.TosAndPrivacyLabel,
 		TOSConfirm:           text.TosConfirm,
 		TOSLinkText:          text.TosLinkText,
-		TOSConfirmAnd:        text.TosConfirmAnd,
+		PrivacyConfirm:       text.PrivacyConfirm,
 		PrivacyLinkText:      text.PrivacyLinkText,
 		SaveButtonText:       text.SaveButtonText,
 	}
@@ -910,7 +916,7 @@ func ExternalUserNotFoundScreenTextPbToDomain(text *text_pb.ExternalUserNotFound
 		TOSAndPrivacyLabel:     text.TosAndPrivacyLabel,
 		TOSConfirm:             text.TosConfirm,
 		TOSLinkText:            text.PrivacyLinkText,
-		TOSConfirmAnd:          text.TosConfirmAnd,
+		PrivacyConfirm:         text.PrivacyConfirm,
 		PrivacyLinkText:        text.PrivacyLinkText,
 	}
 }
@@ -946,5 +952,6 @@ func FooterTextPbToDomain(text *text_pb.FooterText) domain.FooterText {
 		TOS:           text.Tos,
 		PrivacyPolicy: text.PrivacyPolicy,
 		Help:          text.Help,
+		SupportEmail:  text.SupportEmail,
 	}
 }

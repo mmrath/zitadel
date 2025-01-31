@@ -1,8 +1,9 @@
 import { Component, Inject } from '@angular/core';
-import { AbstractControl, UntypedFormControl, UntypedFormGroup, Validators } from '@angular/forms';
-import { MAT_DIALOG_DATA, MatDialogRef } from '@angular/material/dialog';
+import { AbstractControl, UntypedFormControl, UntypedFormGroup } from '@angular/forms';
+import { MatDialogRef, MAT_DIALOG_DATA } from '@angular/material/dialog';
 import { ManagementService } from 'src/app/services/mgmt.service';
 import { ToastService } from 'src/app/services/toast.service';
+import { requiredValidator } from '../form-field/validators/validators';
 
 @Component({
   selector: 'cnsl-project-role-detail-dialog',
@@ -21,7 +22,7 @@ export class ProjectRoleDetailDialogComponent {
   ) {
     this.projectId = data.projectId;
     this.formGroup = new UntypedFormGroup({
-      key: new UntypedFormControl({ value: '', disabled: true }, [Validators.required]),
+      key: new UntypedFormControl({ value: '', disabled: true }, [requiredValidator]),
       displayName: new UntypedFormControl(''),
       group: new UntypedFormControl(''),
     });
@@ -30,9 +31,9 @@ export class ProjectRoleDetailDialogComponent {
   }
 
   submitForm(): void {
-    if (this.formGroup.valid && this.key?.value && this.group?.value && this.displayName?.value) {
+    if (this.formGroup.valid && this.key?.value && this.displayName?.value) {
       this.mgmtService
-        .updateProjectRole(this.projectId, this.key.value, this.displayName.value, this.group.value)
+        .updateProjectRole(this.projectId, this.key.value, this.displayName.value, this.group?.value)
         .then(() => {
           this.toast.showInfo('PROJECT.TOAST.ROLECHANGED', true);
           this.dialogRef.close(true);

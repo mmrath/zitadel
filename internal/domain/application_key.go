@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/zitadel/zitadel/internal/errors"
 	"github.com/zitadel/zitadel/internal/eventstore/v1/models"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 type ApplicationKey struct {
@@ -20,19 +20,19 @@ type ApplicationKey struct {
 	PublicKey      []byte
 }
 
-func (k *ApplicationKey) setPublicKey(publicKey []byte) {
+func (k *ApplicationKey) SetPublicKey(publicKey []byte) {
 	k.PublicKey = publicKey
 }
 
-func (k *ApplicationKey) setPrivateKey(privateKey []byte) {
+func (k *ApplicationKey) SetPrivateKey(privateKey []byte) {
 	k.PrivateKey = privateKey
 }
 
-func (k *ApplicationKey) expirationDate() time.Time {
+func (k *ApplicationKey) GetExpirationDate() time.Time {
 	return k.ExpirationDate
 }
 
-func (k *ApplicationKey) setExpirationDate(expiration time.Time) {
+func (k *ApplicationKey) SetExpirationDate(expiration time.Time) {
 	k.ExpirationDate = expiration
 }
 
@@ -40,7 +40,7 @@ func (k *ApplicationKey) Detail() ([]byte, error) {
 	if k.Type == AuthNKeyTypeJSON {
 		return k.MarshalJSON()
 	}
-	return nil, errors.ThrowPreconditionFailed(nil, "KEY-dsg52", "Errors.Internal")
+	return nil, zerrors.ThrowPreconditionFailed(nil, "KEY-dsg52", "Errors.Internal")
 }
 
 func (k *ApplicationKey) MarshalJSON() ([]byte, error) {

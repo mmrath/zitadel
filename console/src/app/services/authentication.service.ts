@@ -1,9 +1,9 @@
 import { Injectable } from '@angular/core';
 import { AuthConfig, OAuthService } from 'angular-oauth2-oidc';
 import { BehaviorSubject, from, lastValueFrom, Observable } from 'rxjs';
-import { GrpcAuthService } from './grpc-auth.service';
 
 import { StatehandlerService } from './statehandler/statehandler.service';
+import { ToastService } from './toast.service';
 
 @Injectable({
   providedIn: 'root',
@@ -13,7 +13,11 @@ export class AuthenticationService {
   private _authenticated: boolean = false;
   private readonly _authenticationChanged: BehaviorSubject<boolean> = new BehaviorSubject(this.authenticated);
 
-  constructor(private oauthService: OAuthService, private statehandler: StatehandlerService) {}
+  constructor(
+    private oauthService: OAuthService,
+    private statehandler: StatehandlerService,
+    private toast: ToastService,
+  ) {}
 
   public initConfig(data: AuthConfig): void {
     this.authConfig = data;
@@ -31,14 +35,19 @@ export class AuthenticationService {
     return from(this.oauthService.loadUserProfile());
   }
 
+  public getIdToken(): string {
+    return this.oauthService.getIdToken();
+  }
+
   public async authenticate(partialConfig?: Partial<AuthConfig>, force: boolean = false): Promise<boolean> {
     if (partialConfig) {
       Object.assign(this.authConfig, partialConfig);
     }
     this.oauthService.configure(this.authConfig);
-
     this.oauthService.strictDiscoveryDocumentValidation = false;
-    await this.oauthService.loadDiscoveryDocumentAndTryLogin();
+    await this.oauthService.loadDiscoveryDocumentAndTryLogin().catch((error) => {
+      this.toast.showError(error, false, false);
+    });
 
     this._authenticated = this.oauthService.hasValidAccessToken();
     if (!this.oauthService.hasValidIdToken() || !this.authenticated || partialConfig || force) {

@@ -8,7 +8,9 @@ import (
 	member_grpc "github.com/zitadel/zitadel/internal/api/grpc/member"
 	object_grpc "github.com/zitadel/zitadel/internal/api/grpc/object"
 	project_grpc "github.com/zitadel/zitadel/internal/api/grpc/project"
+	"github.com/zitadel/zitadel/internal/eventstore"
 	"github.com/zitadel/zitadel/internal/query"
+	"github.com/zitadel/zitadel/internal/repository/project"
 	mgmt_pb "github.com/zitadel/zitadel/pkg/grpc/management"
 )
 
@@ -51,18 +53,47 @@ func (s *Server) ListProjects(ctx context.Context, req *mgmt_pb.ListProjectsRequ
 	}
 	return &mgmt_pb.ListProjectsResponse{
 		Result:  project_grpc.ProjectViewsToPb(projects.Projects),
-		Details: object_grpc.ToListDetails(projects.Count, projects.Sequence, projects.Timestamp),
+		Details: object_grpc.ToListDetails(projects.Count, projects.Sequence, projects.LastRun),
 	}, nil
 }
 
 func (s *Server) ListProjectGrantChanges(ctx context.Context, req *mgmt_pb.ListProjectGrantChangesRequest) (*mgmt_pb.ListProjectGrantChangesResponse, error) {
-	sequence, limit, asc := change_grpc.ChangeQueryToQuery(req.Query)
-	res, err := s.query.ProjectGrantChanges(ctx, req.ProjectId, req.GrantId, sequence, limit, asc, s.auditLogRetention)
+	var (
+		limit    uint64
+		sequence uint64
+		asc      bool
+	)
+	if req.Query != nil {
+		limit = uint64(req.Query.Limit)
+		sequence = req.Query.Sequence
+		asc = req.Query.Asc
+	}
+
+	query := eventstore.NewSearchQueryBuilder(eventstore.ColumnsEvent).
+		AllowTimeTravel().
+		Limit(limit).
+		OrderDesc().
+		ResourceOwner(authz.GetCtxData(ctx).OrgID).
+		AwaitOpenTransactions().
+		SequenceGreater(sequence).
+		AddQuery().
+		AggregateTypes(project.AggregateType).
+		AggregateIDs(req.ProjectId).
+		EventData(map[string]interface{}{
+			"grantId": req.GrantId,
+		}).
+		Builder()
+	if asc {
+		query.OrderAsc()
+	}
+
+	changes, err := s.query.SearchEvents(ctx, query)
 	if err != nil {
 		return nil, err
 	}
+
 	return &mgmt_pb.ListProjectGrantChangesResponse{
-		Result: change_grpc.ChangesToPb(res.Changes, s.assetAPIPrefix(ctx)),
+		Result: change_grpc.EventsToChangesPb(changes, s.assetAPIPrefix(ctx)),
 	}, nil
 }
 
@@ -85,7 +116,7 @@ func (s *Server) ListGrantedProjects(ctx context.Context, req *mgmt_pb.ListGrant
 	}
 	return &mgmt_pb.ListGrantedProjectsResponse{
 		Result:  project_grpc.GrantedProjectViewsToPb(projects.ProjectGrants),
-		Details: object_grpc.ToListDetails(projects.Count, projects.Sequence, projects.Timestamp),
+		Details: object_grpc.ToListDetails(projects.Count, projects.Sequence, projects.LastRun),
 	}, nil
 }
 
@@ -104,18 +135,44 @@ func (s *Server) ListGrantedProjectRoles(ctx context.Context, req *mgmt_pb.ListG
 	}
 	return &mgmt_pb.ListGrantedProjectRolesResponse{
 		Result:  project_grpc.RoleViewsToPb(roles.ProjectRoles),
-		Details: object_grpc.ToListDetails(roles.Count, roles.Sequence, roles.Timestamp),
+		Details: object_grpc.ToListDetails(roles.Count, roles.Sequence, roles.LastRun),
 	}, nil
 }
 
 func (s *Server) ListProjectChanges(ctx context.Context, req *mgmt_pb.ListProjectChangesRequest) (*mgmt_pb.ListProjectChangesResponse, error) {
-	sequence, limit, asc := change_grpc.ChangeQueryToQuery(req.Query)
-	res, err := s.query.ProjectChanges(ctx, req.ProjectId, sequence, limit, asc, s.auditLogRetention)
+	var (
+		limit    uint64
+		sequence uint64
+		asc      bool
+	)
+	if req.Query != nil {
+		limit = uint64(req.Query.Limit)
+		sequence = req.Query.Sequence
+		asc = req.Query.Asc
+	}
+
+	query := eventstore.NewSearchQueryBuilder(eventstore.ColumnsEvent).
+		AllowTimeTravel().
+		Limit(limit).
+		AwaitOpenTransactions().
+		OrderDesc().
+		ResourceOwner(authz.GetCtxData(ctx).OrgID).
+		SequenceGreater(sequence).
+		AddQuery().
+		AggregateTypes(project.AggregateType).
+		AggregateIDs(req.ProjectId).
+		Builder()
+	if asc {
+		query.OrderAsc()
+	}
+
+	changes, err := s.query.SearchEvents(ctx, query)
 	if err != nil {
 		return nil, err
 	}
+
 	return &mgmt_pb.ListProjectChangesResponse{
-		Result: change_grpc.ChangesToPb(res.Changes, s.assetAPIPrefix(ctx)),
+		Result: change_grpc.EventsToChangesPb(changes, s.assetAPIPrefix(ctx)),
 	}, nil
 }
 
@@ -172,7 +229,7 @@ func (s *Server) RemoveProject(ctx context.Context, req *mgmt_pb.RemoveProjectRe
 	}
 	grants, err := s.query.UserGrants(ctx, &query.UserGrantsQueries{
 		Queries: []query.SearchQuery{projectQuery},
-	})
+	}, true)
 	if err != nil {
 		return nil, err
 	}
@@ -204,7 +261,7 @@ func (s *Server) ListProjectRoles(ctx context.Context, req *mgmt_pb.ListProjectR
 	}
 	return &mgmt_pb.ListProjectRolesResponse{
 		Result:  project_grpc.RoleViewsToPb(roles.ProjectRoles),
-		Details: object_grpc.ToListDetails(roles.Count, roles.Sequence, roles.Timestamp),
+		Details: object_grpc.ToListDetails(roles.Count, roles.Sequence, roles.LastRun),
 	}, nil
 }
 
@@ -257,7 +314,7 @@ func (s *Server) RemoveProjectRole(ctx context.Context, req *mgmt_pb.RemoveProje
 	}
 	userGrants, err := s.query.UserGrants(ctx, &query.UserGrantsQueries{
 		Queries: []query.SearchQuery{projectQuery, rolesQuery},
-	})
+	}, false)
 
 	if err != nil {
 		return nil, err
@@ -294,7 +351,7 @@ func (s *Server) ListProjectMembers(ctx context.Context, req *mgmt_pb.ListProjec
 	}
 	return &mgmt_pb.ListProjectMembersResponse{
 		Result:  member_grpc.MembersToPb(s.assetAPIPrefix(ctx), members.Members),
-		Details: object_grpc.ToListDetails(members.Count, members.Sequence, members.Timestamp),
+		Details: object_grpc.ToListDetails(members.Count, members.Sequence, members.LastRun),
 	}, nil
 }
 

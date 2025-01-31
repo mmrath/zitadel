@@ -19,7 +19,7 @@ type mfaVerifyFormData struct {
 
 func (l *Login) handleMFAVerify(w http.ResponseWriter, r *http.Request) {
 	data := new(mfaVerifyFormData)
-	authReq, err := l.getAuthRequestAndParseData(r, data)
+	authReq, err := l.ensureAuthRequestAndParseData(r, data)
 	if err != nil {
 		l.renderError(w, r, authReq, err)
 		return
@@ -33,11 +33,19 @@ func (l *Login) handleMFAVerify(w http.ResponseWriter, r *http.Request) {
 		l.renderMFAVerifySelected(w, r, authReq, step, data.SelectedProvider, nil)
 		return
 	}
-	if data.MFAType == domain.MFATypeOTP {
+	if data.MFAType == domain.MFATypeTOTP {
 		userAgentID, _ := http_mw.UserAgentIDFromCtx(r.Context())
 		err = l.authRepo.VerifyMFAOTP(setContext(r.Context(), authReq.UserOrgID), authReq.ID, authReq.UserID, authReq.UserOrgID, data.Code, userAgentID, domain.BrowserInfoFromRequest(r))
+
+		metadata, actionErr := l.runPostInternalAuthenticationActions(authReq, r, authMethodOTP, err)
+		if err == nil && actionErr == nil && len(metadata) > 0 {
+			_, err = l.command.BulkSetUserMetadata(r.Context(), authReq.UserID, authReq.UserOrgID, metadata...)
+		} else if actionErr != nil && err == nil {
+			err = actionErr
+		}
+
 		if err != nil {
-			l.renderMFAVerifySelected(w, r, authReq, step, domain.MFATypeOTP, err)
+			l.renderMFAVerifySelected(w, r, authReq, step, domain.MFATypeTOTP, err)
 			return
 		}
 	}
@@ -54,16 +62,12 @@ func (l *Login) renderMFAVerify(w http.ResponseWriter, r *http.Request, authReq 
 }
 
 func (l *Login) renderMFAVerifySelected(w http.ResponseWriter, r *http.Request, authReq *domain.AuthRequest, verificationStep *domain.MFAVerificationStep, selectedProvider domain.MFAType, err error) {
-	var errID, errMessage string
-	if err != nil {
-		errID, errMessage = l.getErrorMessage(r, err)
-	}
-	data := l.getUserData(r, authReq, "","", errID, errMessage)
+	translator := l.getTranslator(r.Context(), authReq)
+	data := l.getUserData(r, authReq, translator, "", "", err)
 	if verificationStep == nil {
 		l.renderError(w, r, authReq, err)
 		return
 	}
-	translator := l.getTranslator(r.Context(), authReq)
 
 	switch selectedProvider {
 	case domain.MFATypeU2F:
@@ -71,11 +75,17 @@ func (l *Login) renderMFAVerifySelected(w http.ResponseWriter, r *http.Request, 
 		data.Description = translator.LocalizeWithoutArgs("VerifyMFAU2F.Description")
 		l.renderU2FVerification(w, r, authReq, removeSelectedProviderFromList(verificationStep.MFAProviders, domain.MFATypeU2F), nil)
 		return
-	case domain.MFATypeOTP:
-		data.MFAProviders = removeSelectedProviderFromList(verificationStep.MFAProviders, domain.MFATypeOTP)
-		data.SelectedMFAProvider = domain.MFATypeOTP
+	case domain.MFATypeTOTP:
+		data.MFAProviders = removeSelectedProviderFromList(verificationStep.MFAProviders, domain.MFATypeTOTP)
+		data.SelectedMFAProvider = domain.MFATypeTOTP
 		data.Title = translator.LocalizeWithoutArgs("VerifyMFAOTP.Title")
 		data.Description = translator.LocalizeWithoutArgs("VerifyMFAOTP.Description")
+	case domain.MFATypeOTPSMS:
+		l.handleOTPVerification(w, r, authReq, verificationStep.MFAProviders, domain.MFATypeOTPSMS, nil)
+		return
+	case domain.MFATypeOTPEmail:
+		l.handleOTPVerification(w, r, authReq, verificationStep.MFAProviders, domain.MFATypeOTPEmail, nil)
+		return
 	default:
 		l.renderError(w, r, authReq, err)
 		return

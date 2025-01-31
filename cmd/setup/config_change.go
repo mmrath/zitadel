@@ -3,6 +3,7 @@ package setup
 import (
 	"context"
 
+	"github.com/zitadel/zitadel/internal/cache/connector"
 	"github.com/zitadel/zitadel/internal/command"
 	"github.com/zitadel/zitadel/internal/config/systemdefaults"
 	"github.com/zitadel/zitadel/internal/eventstore"
@@ -17,24 +18,24 @@ type externalConfigChange struct {
 	currentExternalDomain string
 	currentExternalSecure bool
 	currentExternalPort   uint16
+	defaults              systemdefaults.SystemDefaults
 }
 
-func (mig *externalConfigChange) SetLastExecution(lastRun map[string]interface{}) {
+func (mig *externalConfigChange) Check(lastRun map[string]interface{}) bool {
 	mig.currentExternalDomain, _ = lastRun["externalDomain"].(string)
 	externalPort, _ := lastRun["externalPort"].(float64)
 	mig.currentExternalPort = uint16(externalPort)
 	mig.currentExternalSecure, _ = lastRun["externalSecure"].(bool)
-}
-
-func (mig *externalConfigChange) Check() bool {
 	return mig.currentExternalSecure != mig.ExternalSecure ||
 		mig.currentExternalPort != mig.ExternalPort ||
 		mig.currentExternalDomain != mig.ExternalDomain
 }
 
-func (mig *externalConfigChange) Execute(ctx context.Context) error {
-	cmd, err := command.StartCommands(mig.es,
-		systemdefaults.SystemDefaults{},
+func (mig *externalConfigChange) Execute(ctx context.Context, _ eventstore.Event) error {
+	cmd, err := command.StartCommands(ctx,
+		mig.es,
+		connector.Connectors{},
+		mig.defaults,
 		nil,
 		nil,
 		nil,
@@ -49,6 +50,13 @@ func (mig *externalConfigChange) Execute(ctx context.Context) error {
 		nil,
 		nil,
 		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		0,
+		0,
+		0,
 		nil,
 	)
 

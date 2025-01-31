@@ -61,7 +61,7 @@ export class OwnedProjectDetailComponent implements OnInit {
   public refreshChanges$: EventEmitter<void> = new EventEmitter();
 
   public settingsList: SidenavSetting[] = [GENERAL, ROLES, PROJECTGRANTS, GRANTS];
-  public currentSetting: string | undefined = '';
+  public currentSetting: string = '';
   constructor(
     public translate: TranslateService,
     private route: ActivatedRoute,
@@ -72,17 +72,16 @@ export class OwnedProjectDetailComponent implements OnInit {
     private router: Router,
     private breadcrumbService: BreadcrumbService,
   ) {
+    this.currentSetting = 'general';
     route.queryParams.pipe(take(1)).subscribe((params: Params) => {
       const { id } = params;
       if (id) {
         this.currentSetting = id;
-      } else {
-        this.currentSetting = 'general';
       }
     });
   }
 
-  public ngOnInit(): void {
+  ngOnInit(): void {
     const projectId = this.route.snapshot.paramMap.get(ROUTEPARAM);
     if (projectId) {
       this.projectId = projectId;

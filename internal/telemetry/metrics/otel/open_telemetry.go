@@ -5,21 +5,19 @@ import (
 	"net/http"
 	"sync"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/prometheus"
 	"go.opentelemetry.io/otel/metric"
-	"go.opentelemetry.io/otel/sdk/export/metric/aggregation"
-	controller "go.opentelemetry.io/otel/sdk/metric/controller/basic"
-	processor "go.opentelemetry.io/otel/sdk/metric/processor/basic"
-	selector "go.opentelemetry.io/otel/sdk/metric/selector/simple"
+	sdk_metric "go.opentelemetry.io/otel/sdk/metric"
 
-	caos_errs "github.com/zitadel/zitadel/internal/errors"
 	"github.com/zitadel/zitadel/internal/telemetry/metrics"
 	otel_resource "github.com/zitadel/zitadel/internal/telemetry/otel"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 type Metrics struct {
-	Exporter          *prometheus.Exporter
+	Provider          metric.MeterProvider
 	Meter             metric.Meter
 	Counters          sync.Map
 	UpDownSumObserver sync.Map
@@ -31,39 +29,36 @@ func NewMetrics(meterName string) (metrics.Metrics, error) {
 	if err != nil {
 		return nil, err
 	}
-	exporter, err := prometheus.New(
-		prometheus.Config{},
-		controller.New(
-			processor.NewFactory(
-				selector.NewWithHistogramDistribution(),
-				aggregation.CumulativeTemporalitySelector(),
-				processor.WithMemory(true),
-			),
-			controller.WithResource(resource),
-		),
-	)
+	exporter, err := prometheus.New()
 	if err != nil {
 		return &Metrics{}, err
 	}
+	meterProvider := sdk_metric.NewMeterProvider(
+		sdk_metric.WithReader(exporter),
+		sdk_metric.WithResource(resource),
+	)
 	return &Metrics{
-		Exporter: exporter,
-		Meter:    exporter.MeterProvider().Meter(meterName),
+		Provider: meterProvider,
+		Meter:    meterProvider.Meter(meterName),
 	}, nil
 }
 
 func (m *Metrics) GetExporter() http.Handler {
-	return m.Exporter
+	return promhttp.Handler()
 }
 
 func (m *Metrics) GetMetricsProvider() metric.MeterProvider {
-	return m.Exporter.MeterProvider()
+	return m.Provider
 }
 
 func (m *Metrics) RegisterCounter(name, description string) error {
 	if _, exists := m.Counters.Load(name); exists {
 		return nil
 	}
-	counter := metric.Must(m.Meter).NewInt64Counter(name, metric.WithDescription(description))
+	counter, err := m.Meter.Int64Counter(name, metric.WithDescription(description))
+	if err != nil {
+		return err
+	}
 	m.Counters.Store(name, counter)
 	return nil
 }
@@ -71,35 +66,41 @@ func (m *Metrics) RegisterCounter(name, description string) error {
 func (m *Metrics) AddCount(ctx context.Context, name string, value int64, labels map[string]attribute.Value) error {
 	counter, exists := m.Counters.Load(name)
 	if !exists {
-		return caos_errs.ThrowNotFound(nil, "METER-4u8fs", "Errors.Metrics.Counter.NotFound")
+		return zerrors.ThrowNotFound(nil, "METER-4u8fs", "Errors.Metrics.Counter.NotFound")
 	}
-	counter.(metric.Int64Counter).Add(ctx, value, MapToKeyValue(labels)...)
+	counter.(metric.Int64Counter).Add(ctx, value, MapToAddOption(labels)...)
 	return nil
 }
 
-func (m *Metrics) RegisterUpDownSumObserver(name, description string, callbackFunc metric.Int64ObserverFunc) error {
+func (m *Metrics) RegisterUpDownSumObserver(name, description string, callbackFunc metric.Int64Callback) error {
 	if _, exists := m.UpDownSumObserver.Load(name); exists {
 		return nil
 	}
-	sumObserver := metric.Must(m.Meter).NewInt64UpDownCounterObserver(
-		name, callbackFunc, metric.WithDescription(description))
 
-	m.UpDownSumObserver.Store(name, sumObserver)
+	counter, err := m.Meter.Int64ObservableUpDownCounter(name, metric.WithInt64Callback(callbackFunc), metric.WithDescription(description))
+	if err != nil {
+		return err
+	}
+
+	m.UpDownSumObserver.Store(name, counter)
 	return nil
 }
 
-func (m *Metrics) RegisterValueObserver(name, description string, callbackFunc metric.Int64ObserverFunc) error {
+func (m *Metrics) RegisterValueObserver(name, description string, callbackFunc metric.Int64Callback) error {
 	if _, exists := m.UpDownSumObserver.Load(name); exists {
 		return nil
 	}
-	sumObserver := metric.Must(m.Meter).NewInt64GaugeObserver(
-		name, callbackFunc, metric.WithDescription(description))
 
-	m.UpDownSumObserver.Store(name, sumObserver)
+	gauge, err := m.Meter.Int64ObservableGauge(name, metric.WithInt64Callback(callbackFunc), metric.WithDescription(description))
+	if err != nil {
+		return err
+	}
+
+	m.UpDownSumObserver.Store(name, gauge)
 	return nil
 }
 
-func MapToKeyValue(labels map[string]attribute.Value) []attribute.KeyValue {
+func MapToAddOption(labels map[string]attribute.Value) []metric.AddOption {
 	if labels == nil {
 		return nil
 	}
@@ -110,5 +111,5 @@ func MapToKeyValue(labels map[string]attribute.Value) []attribute.KeyValue {
 			Value: value,
 		})
 	}
-	return keyValues
+	return []metric.AddOption{metric.WithAttributes(keyValues...)}
 }

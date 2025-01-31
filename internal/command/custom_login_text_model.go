@@ -21,9 +21,7 @@ func (wm *CustomLoginTextsReadModel) Reduce() error {
 		case *policy.CustomTextSetEvent:
 			wm.CustomLoginTexts[e.Template+e.Language.String()] = &CustomText{Language: e.Language, Template: e.Template}
 		case *policy.CustomTextTemplateRemovedEvent:
-			if _, ok := wm.CustomLoginTexts[e.Template+e.Language.String()]; ok {
-				delete(wm.CustomLoginTexts, e.Template+e.Language.String())
-			}
+			delete(wm.CustomLoginTexts, e.Template+e.Language.String())
 		}
 	}
 	return wm.WriteModel.Reduce()
@@ -188,6 +186,7 @@ type CustomLoginTextReadModel struct {
 
 	PasswordChangeTitle                   string
 	PasswordChangeDescription             string
+	PasswordChangeExpiredDescription      string
 	PasswordChangeOldPasswordLabel        string
 	PasswordChangeNewPasswordLabel        string
 	PasswordChangeNewPasswordConfirmLabel string
@@ -206,6 +205,7 @@ type CustomLoginTextReadModel struct {
 	RegistrationOptionDescription              string
 	RegistrationOptionUserNameButtonText       string
 	RegistrationOptionExternalLoginDescription string
+	RegistrationOptionLoginButtonText          string
 
 	RegistrationUserTitle                  string
 	RegistrationUserDescription            string
@@ -222,7 +222,7 @@ type CustomLoginTextReadModel struct {
 	RegistrationUserTOSConfirm             string
 	RegistrationUserTOSLink                string
 	RegistrationUserTOSLinkText            string
-	RegistrationUserTOSConfirmAnd          string
+	RegistrationUserPrivacyConfirm         string
 	RegistrationUserPrivacyLink            string
 	RegistrationUserPrivacyLinkText        string
 	RegistrationUserNextButtonText         string
@@ -241,7 +241,7 @@ type CustomLoginTextReadModel struct {
 	ExternalRegistrationUserOverviewTOSConfirm         string
 	ExternalRegistrationUserOverviewTOSLink            string
 	ExternalRegistrationUserOverviewTOSLinkText        string
-	ExternalRegistrationUserOverviewTOSConfirmAnd      string
+	ExternalRegistrationUserOverviewPrivacyConfirm     string
 	ExternalRegistrationUserOverviewPrivacyLink        string
 	ExternalRegistrationUserOverviewPrivacyLinkText    string
 	ExternalRegistrationUserOverviewBackButtonText     string
@@ -259,9 +259,14 @@ type CustomLoginTextReadModel struct {
 	RegisterOrgTOSAndPrivacyLabel   string
 	RegisterOrgTOSConfirm           string
 	RegisterOrgTOSLinkText          string
-	RegisterOrgTOSConfirmAnd        string
+	RegisterOrgPrivacyConfirm       string
 	RegisterOrgPrivacyLinkText      string
 	RegisterOrgSaveButtonText       string
+
+	LinkingUserPromptTitle           string
+	LinkingUserPromptDescription     string
+	LinkingUserPromptLinkButtonText  string
+	LinkingUserPromptOtherButtonText string
 
 	LinkingUserDoneTitle            string
 	LinkingUserDoneDescription      string
@@ -275,7 +280,7 @@ type CustomLoginTextReadModel struct {
 	ExternalUserNotFoundTOSAndPrivacyLabel     string
 	ExternalUserNotFoundTOSConfirm             string
 	ExternalUserNotFoundTOSLinkText            string
-	ExternalUserNotFoundTOSConfirmAnd          string
+	ExternalUserNotFoundPrivacyConfirm         string
 	ExternalUserNotFoundPrivacyLinkText        string
 
 	SuccessLoginTitle                   string
@@ -290,7 +295,7 @@ type CustomLoginTextReadModel struct {
 	FooterTOS           string
 	FooterPrivacyPolicy string
 	FooterHelp          string
-	FooterHelpLink      string
+	FooterSupportEmail  string
 }
 
 func (wm *CustomLoginTextReadModel) Reduce() error {
@@ -578,10 +583,15 @@ func (wm *CustomLoginTextReadModel) Reduce() error {
 				continue
 			}
 		case *policy.CustomTextTemplateRemovedEvent:
-			if e.Template != domain.LoginCustomText {
+			if e.Template != domain.LoginCustomText || wm.Language != e.Language {
 				continue
 			}
-			wm.State = domain.PolicyStateRemoved
+			// Reset all values
+			*wm = CustomLoginTextReadModel{
+				WriteModel: wm.WriteModel,
+				Language:   wm.Language,
+				State:      domain.PolicyStateRemoved,
+			}
 		}
 	}
 	return wm.WriteModel.Reduce()
@@ -1750,6 +1760,10 @@ func (wm *CustomLoginTextReadModel) handlePasswordChangeScreenSetEvent(e *policy
 		wm.PasswordChangeDescription = e.Text
 		return
 	}
+	if e.Key == domain.LoginKeyPasswordChangeExpiredDescription {
+		wm.PasswordChangeExpiredDescription = e.Text
+		return
+	}
 	if e.Key == domain.LoginKeyPasswordChangeOldPasswordLabel {
 		wm.PasswordChangeOldPasswordLabel = e.Text
 		return
@@ -1779,6 +1793,10 @@ func (wm *CustomLoginTextReadModel) handlePasswordChangeScreenRemoveEvent(e *pol
 	}
 	if e.Key == domain.LoginKeyPasswordChangeDescription {
 		wm.PasswordChangeDescription = ""
+		return
+	}
+	if e.Key == domain.LoginKeyPasswordChangeExpiredDescription {
+		wm.PasswordChangeExpiredDescription = ""
 		return
 	}
 	if e.Key == domain.LoginKeyPasswordChangeOldPasswordLabel {
@@ -1880,6 +1898,10 @@ func (wm *CustomLoginTextReadModel) handleRegistrationOptionScreenSetEvent(e *po
 		wm.RegistrationOptionExternalLoginDescription = e.Text
 		return
 	}
+	if e.Key == domain.LoginKeyRegistrationOptionLoginButtonText {
+		wm.RegistrationOptionLoginButtonText = e.Text
+		return
+	}
 }
 
 func (wm *CustomLoginTextReadModel) handleRegistrationOptionScreenRemoveEvent(e *policy.CustomTextRemovedEvent) {
@@ -1897,6 +1919,10 @@ func (wm *CustomLoginTextReadModel) handleRegistrationOptionScreenRemoveEvent(e 
 	}
 	if e.Key == domain.LoginKeyRegistrationOptionExternalLoginDescription {
 		wm.RegistrationOptionExternalLoginDescription = ""
+		return
+	}
+	if e.Key == domain.LoginKeyRegistrationOptionLoginButtonText {
+		wm.RegistrationOptionLoginButtonText = ""
 		return
 	}
 }
@@ -1958,8 +1984,8 @@ func (wm *CustomLoginTextReadModel) handleRegistrationUserScreenSetEvent(e *poli
 		wm.RegistrationUserTOSLinkText = e.Text
 		return
 	}
-	if e.Key == domain.LoginKeyRegistrationUserTOSConfirmAnd {
-		wm.RegistrationUserTOSConfirmAnd = e.Text
+	if e.Key == domain.LoginKeyRegistrationUserPrivacyConfirm {
+		wm.RegistrationUserPrivacyConfirm = e.Text
 		return
 	}
 	if e.Key == domain.LoginKeyRegistrationUserPrivacyLinkText {
@@ -2025,8 +2051,8 @@ func (wm *CustomLoginTextReadModel) handleExternalRegistrationUserOverviewScreen
 		wm.ExternalRegistrationUserOverviewTOSLinkText = e.Text
 		return
 	}
-	if e.Key == domain.LoginKeyExternalRegistrationUserOverviewTOSConfirmAnd {
-		wm.ExternalRegistrationUserOverviewTOSConfirmAnd = e.Text
+	if e.Key == domain.LoginKeyExternalRegistrationUserOverviewPrivacyConfirm {
+		wm.ExternalRegistrationUserOverviewPrivacyConfirm = e.Text
 		return
 	}
 	if e.Key == domain.LoginKeyExternalRegistrationUserOverviewPrivacyLinkText {
@@ -2100,8 +2126,8 @@ func (wm *CustomLoginTextReadModel) handleRegistrationUserScreenRemoveEvent(e *p
 		wm.RegistrationUserTOSLinkText = ""
 		return
 	}
-	if e.Key == domain.LoginKeyRegistrationUserTOSConfirmAnd {
-		wm.RegistrationUserTOSConfirmAnd = ""
+	if e.Key == domain.LoginKeyRegistrationUserPrivacyConfirm {
+		wm.RegistrationUserPrivacyConfirm = ""
 		return
 	}
 	if e.Key == domain.LoginKeyRegistrationUserPrivacyLinkText {
@@ -2167,8 +2193,8 @@ func (wm *CustomLoginTextReadModel) handleExternalRegistrationUserOverviewScreen
 		wm.ExternalRegistrationUserOverviewTOSLinkText = ""
 		return
 	}
-	if e.Key == domain.LoginKeyExternalRegistrationUserOverviewTOSConfirmAnd {
-		wm.ExternalRegistrationUserOverviewTOSConfirmAnd = ""
+	if e.Key == domain.LoginKeyExternalRegistrationUserOverviewPrivacyConfirm {
+		wm.ExternalRegistrationUserOverviewPrivacyConfirm = ""
 		return
 	}
 	if e.Key == domain.LoginKeyExternalRegistrationUserOverviewPrivacyLinkText {
@@ -2234,8 +2260,8 @@ func (wm *CustomLoginTextReadModel) handleRegistrationOrgScreenSetEvent(e *polic
 		wm.RegisterOrgTOSLinkText = e.Text
 		return
 	}
-	if e.Key == domain.LoginKeyRegisterOrgTosConfirmAnd {
-		wm.RegisterOrgTOSConfirmAnd = e.Text
+	if e.Key == domain.LoginKeyRegisterOrgPrivacyConfirm {
+		wm.RegisterOrgPrivacyConfirm = e.Text
 		return
 	}
 	if e.Key == domain.LoginKeyRegisterOrgPrivacyLinkText {
@@ -2297,8 +2323,8 @@ func (wm *CustomLoginTextReadModel) handleRegistrationOrgScreenRemoveEvent(e *po
 		wm.RegisterOrgTOSLinkText = ""
 		return
 	}
-	if e.Key == domain.LoginKeyRegisterOrgTosConfirmAnd {
-		wm.RegisterOrgTOSConfirmAnd = ""
+	if e.Key == domain.LoginKeyRegisterOrgPrivacyConfirm {
+		wm.RegisterOrgPrivacyConfirm = ""
 		return
 	}
 	if e.Key == domain.LoginKeyRegisterOrgPrivacyLinkText {
@@ -2378,8 +2404,8 @@ func (wm *CustomLoginTextReadModel) handleExternalUserNotFoundScreenSetEvent(e *
 		wm.ExternalUserNotFoundTOSLinkText = e.Text
 		return
 	}
-	if e.Key == domain.LoginKeyExternalNotFoundTOSConfirmAnd {
-		wm.ExternalUserNotFoundTOSConfirmAnd = e.Text
+	if e.Key == domain.LoginKeyExternalNotFoundPrivacyConfirm {
+		wm.ExternalUserNotFoundPrivacyConfirm = e.Text
 		return
 	}
 	if e.Key == domain.LoginKeyExternalNotFoundPrivacyLinkText {
@@ -2417,8 +2443,8 @@ func (wm *CustomLoginTextReadModel) handleExternalUserNotFoundScreenRemoveEvent(
 		wm.ExternalUserNotFoundTOSConfirm = ""
 		return
 	}
-	if e.Key == domain.LoginKeyExternalNotFoundTOSConfirmAnd {
-		wm.ExternalUserNotFoundTOSConfirmAnd = ""
+	if e.Key == domain.LoginKeyExternalNotFoundPrivacyConfirm {
+		wm.ExternalUserNotFoundPrivacyConfirm = ""
 		return
 	}
 	if e.Key == domain.LoginKeyExternalNotFoundPrivacyLinkText {
@@ -2508,6 +2534,10 @@ func (wm *CustomLoginTextReadModel) handleFooterTextSetEvent(e *policy.CustomTex
 		wm.FooterHelp = e.Text
 		return
 	}
+	if e.Key == domain.LoginKeyFooterSupportEmail {
+		wm.FooterSupportEmail = e.Text
+		return
+	}
 }
 
 func (wm *CustomLoginTextReadModel) handleFooterTextRemoveEvent(e *policy.CustomTextRemovedEvent) {
@@ -2521,6 +2551,10 @@ func (wm *CustomLoginTextReadModel) handleFooterTextRemoveEvent(e *policy.Custom
 	}
 	if e.Key == domain.LoginKeyFooterHelp {
 		wm.FooterHelp = ""
+		return
+	}
+	if e.Key == domain.LoginKeyFooterSupportEmail {
+		wm.FooterSupportEmail = ""
 		return
 	}
 }

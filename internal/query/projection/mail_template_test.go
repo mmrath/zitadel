@@ -4,12 +4,11 @@ import (
 	"testing"
 
 	"github.com/zitadel/zitadel/internal/domain"
-	"github.com/zitadel/zitadel/internal/errors"
 	"github.com/zitadel/zitadel/internal/eventstore"
-	"github.com/zitadel/zitadel/internal/eventstore/handler"
-	"github.com/zitadel/zitadel/internal/eventstore/repository"
+	"github.com/zitadel/zitadel/internal/eventstore/handler/v2"
 	"github.com/zitadel/zitadel/internal/repository/instance"
 	"github.com/zitadel/zitadel/internal/repository/org"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 func TestMailTemplateProjection_reduces(t *testing.T) {
@@ -23,25 +22,25 @@ func TestMailTemplateProjection_reduces(t *testing.T) {
 		want   wantReduce
 	}{
 		{
-			name: "org reduceAdded",
+			name: "org.reduceAdded",
 			args: args{
-				event: getEvent(testEvent(
-					repository.EventType(org.MailTemplateAddedEventType),
-					org.AggregateType,
-					[]byte(`{
+				event: getEvent(
+					testEvent(
+						org.MailTemplateAddedEventType,
+						org.AggregateType,
+						[]byte(`{
 						"template": "PHRhYmxlPjwvdGFibGU+"
 					}`),
-				), org.MailTemplateAddedEventMapper),
+					), org.MailTemplateAddedEventMapper),
 			},
 			reduce: (&mailTemplateProjection{}).reduceAdded,
 			want: wantReduce{
-				aggregateType:    eventstore.AggregateType("org"),
-				sequence:         15,
-				previousSequence: 10,
+				aggregateType: eventstore.AggregateType("org"),
+				sequence:      15,
 				executer: &testExecuter{
 					executions: []execution{
 						{
-							expectedStmt: "INSERT INTO projections.mail_templates (aggregate_id, instance_id, creation_date, change_date, sequence, state, is_default, template) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+							expectedStmt: "INSERT INTO projections.mail_templates2 (aggregate_id, instance_id, creation_date, change_date, sequence, state, is_default, template) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
 							expectedArgs: []interface{}{
 								"agg-id",
 								"instance-id",
@@ -58,25 +57,25 @@ func TestMailTemplateProjection_reduces(t *testing.T) {
 			},
 		},
 		{
-			name:   "org reduceChanged",
+			name:   "org.reduceChanged",
 			reduce: (&mailTemplateProjection{}).reduceChanged,
 			args: args{
-				event: getEvent(testEvent(
-					repository.EventType(org.MailTemplateChangedEventType),
-					org.AggregateType,
-					[]byte(`{
+				event: getEvent(
+					testEvent(
+						org.MailTemplateChangedEventType,
+						org.AggregateType,
+						[]byte(`{
 						"template": "PHRhYmxlPjwvdGFibGU+"
 		}`),
-				), org.MailTemplateChangedEventMapper),
+					), org.MailTemplateChangedEventMapper),
 			},
 			want: wantReduce{
-				aggregateType:    eventstore.AggregateType("org"),
-				sequence:         15,
-				previousSequence: 10,
+				aggregateType: eventstore.AggregateType("org"),
+				sequence:      15,
 				executer: &testExecuter{
 					executions: []execution{
 						{
-							expectedStmt: "UPDATE projections.mail_templates SET (change_date, sequence, template) = ($1, $2, $3) WHERE (aggregate_id = $4) AND (instance_id = $5)",
+							expectedStmt: "UPDATE projections.mail_templates2 SET (change_date, sequence, template) = ($1, $2, $3) WHERE (aggregate_id = $4) AND (instance_id = $5)",
 							expectedArgs: []interface{}{
 								anyArg{},
 								uint64(15),
@@ -90,23 +89,23 @@ func TestMailTemplateProjection_reduces(t *testing.T) {
 			},
 		},
 		{
-			name:   "org reduceRemoved",
+			name:   "org.reduceRemoved",
 			reduce: (&mailTemplateProjection{}).reduceRemoved,
 			args: args{
-				event: getEvent(testEvent(
-					repository.EventType(org.MailTemplateRemovedEventType),
-					org.AggregateType,
-					nil,
-				), org.MailTemplateRemovedEventMapper),
+				event: getEvent(
+					testEvent(
+						org.MailTemplateRemovedEventType,
+						org.AggregateType,
+						nil,
+					), org.MailTemplateRemovedEventMapper),
 			},
 			want: wantReduce{
-				aggregateType:    eventstore.AggregateType("org"),
-				sequence:         15,
-				previousSequence: 10,
+				aggregateType: eventstore.AggregateType("org"),
+				sequence:      15,
 				executer: &testExecuter{
 					executions: []execution{
 						{
-							expectedStmt: "DELETE FROM projections.mail_templates WHERE (aggregate_id = $1) AND (instance_id = $2)",
+							expectedStmt: "DELETE FROM projections.mail_templates2 WHERE (aggregate_id = $1) AND (instance_id = $2)",
 							expectedArgs: []interface{}{
 								"agg-id",
 								"instance-id",
@@ -117,23 +116,23 @@ func TestMailTemplateProjection_reduces(t *testing.T) {
 			},
 		},
 		{
-			name: "instance reduceInstanceRemoved",
+			name: "instance.reduceInstanceRemoved",
 			args: args{
-				event: getEvent(testEvent(
-					repository.EventType(instance.InstanceRemovedEventType),
-					instance.AggregateType,
-					nil,
-				), instance.InstanceRemovedEventMapper),
+				event: getEvent(
+					testEvent(
+						instance.InstanceRemovedEventType,
+						instance.AggregateType,
+						nil,
+					), instance.InstanceRemovedEventMapper),
 			},
 			reduce: reduceInstanceRemovedHelper(MailTemplateInstanceIDCol),
 			want: wantReduce{
-				aggregateType:    eventstore.AggregateType("instance"),
-				sequence:         15,
-				previousSequence: 10,
+				aggregateType: eventstore.AggregateType("instance"),
+				sequence:      15,
 				executer: &testExecuter{
 					executions: []execution{
 						{
-							expectedStmt: "DELETE FROM projections.mail_templates WHERE (instance_id = $1)",
+							expectedStmt: "DELETE FROM projections.mail_templates2 WHERE (instance_id = $1)",
 							expectedArgs: []interface{}{
 								"agg-id",
 							},
@@ -143,25 +142,25 @@ func TestMailTemplateProjection_reduces(t *testing.T) {
 			},
 		},
 		{
-			name:   "instance reduceAdded",
+			name:   "instance.reduceAdded",
 			reduce: (&mailTemplateProjection{}).reduceAdded,
 			args: args{
-				event: getEvent(testEvent(
-					repository.EventType(instance.MailTemplateAddedEventType),
-					instance.AggregateType,
-					[]byte(`{
+				event: getEvent(
+					testEvent(
+						instance.MailTemplateAddedEventType,
+						instance.AggregateType,
+						[]byte(`{
 						"template": "PHRhYmxlPjwvdGFibGU+"
 					}`),
-				), instance.MailTemplateAddedEventMapper),
+					), instance.MailTemplateAddedEventMapper),
 			},
 			want: wantReduce{
-				aggregateType:    eventstore.AggregateType("instance"),
-				sequence:         15,
-				previousSequence: 10,
+				aggregateType: eventstore.AggregateType("instance"),
+				sequence:      15,
 				executer: &testExecuter{
 					executions: []execution{
 						{
-							expectedStmt: "INSERT INTO projections.mail_templates (aggregate_id, instance_id, creation_date, change_date, sequence, state, is_default, template) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+							expectedStmt: "INSERT INTO projections.mail_templates2 (aggregate_id, instance_id, creation_date, change_date, sequence, state, is_default, template) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
 							expectedArgs: []interface{}{
 								"agg-id",
 								"instance-id",
@@ -178,25 +177,25 @@ func TestMailTemplateProjection_reduces(t *testing.T) {
 			},
 		},
 		{
-			name:   "instance reduceChanged",
+			name:   "instance.reduceChanged",
 			reduce: (&mailTemplateProjection{}).reduceChanged,
 			args: args{
-				event: getEvent(testEvent(
-					repository.EventType(instance.MailTemplateChangedEventType),
-					instance.AggregateType,
-					[]byte(`{
+				event: getEvent(
+					testEvent(
+						instance.MailTemplateChangedEventType,
+						instance.AggregateType,
+						[]byte(`{
 						"template": "PHRhYmxlPjwvdGFibGU+"
 					}`),
-				), instance.MailTemplateChangedEventMapper),
+					), instance.MailTemplateChangedEventMapper),
 			},
 			want: wantReduce{
-				aggregateType:    eventstore.AggregateType("instance"),
-				sequence:         15,
-				previousSequence: 10,
+				aggregateType: eventstore.AggregateType("instance"),
+				sequence:      15,
 				executer: &testExecuter{
 					executions: []execution{
 						{
-							expectedStmt: "UPDATE projections.mail_templates SET (change_date, sequence, template) = ($1, $2, $3) WHERE (aggregate_id = $4) AND (instance_id = $5)",
+							expectedStmt: "UPDATE projections.mail_templates2 SET (change_date, sequence, template) = ($1, $2, $3) WHERE (aggregate_id = $4) AND (instance_id = $5)",
 							expectedArgs: []interface{}{
 								anyArg{},
 								uint64(15),
@@ -209,12 +208,39 @@ func TestMailTemplateProjection_reduces(t *testing.T) {
 				},
 			},
 		},
+		{
+			name:   "org.reduceOwnerRemoved",
+			reduce: (&mailTemplateProjection{}).reduceOwnerRemoved,
+			args: args{
+				event: getEvent(
+					testEvent(
+						org.OrgRemovedEventType,
+						org.AggregateType,
+						nil,
+					), org.OrgRemovedEventMapper),
+			},
+			want: wantReduce{
+				aggregateType: eventstore.AggregateType("org"),
+				sequence:      15,
+				executer: &testExecuter{
+					executions: []execution{
+						{
+							expectedStmt: "DELETE FROM projections.mail_templates2 WHERE (instance_id = $1) AND (aggregate_id = $2)",
+							expectedArgs: []interface{}{
+								"instance-id",
+								"agg-id",
+							},
+						},
+					},
+				},
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			event := baseEvent(t)
 			got, err := tt.reduce(event)
-			if _, ok := err.(errors.InvalidArgument); !ok {
+			if ok := zerrors.IsErrorInvalidArgument(err); !ok {
 				t.Errorf("no wrong event mapping: %v, got: %v", err, got)
 			}
 

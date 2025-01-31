@@ -48,12 +48,12 @@ func (s *Server) ListMyMemberships(ctx context.Context, req *auth_pb.ListMyMembe
 	if err != nil {
 		return nil, err
 	}
-	response, err := s.query.Memberships(ctx, request)
+	response, err := s.query.Memberships(ctx, request, false)
 	if err != nil {
 		return nil, err
 	}
 	return &auth_pb.ListMyMembershipsResponse{
 		Result:  user_grpc.MembershipsToMembershipsPb(response.Memberships),
-		Details: object.ToListDetails(response.Count, response.Sequence, response.Timestamp),
+		Details: object.ToListDetails(response.Count, response.Sequence, response.LastRun),
 	}, nil
 }

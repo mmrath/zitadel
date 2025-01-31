@@ -10,7 +10,68 @@ import (
 	"time"
 
 	"github.com/zitadel/zitadel/internal/domain"
-	errs "github.com/zitadel/zitadel/internal/errors"
+	"github.com/zitadel/zitadel/internal/zerrors"
+)
+
+var (
+	prepareSecretGeneratorStmt = `SELECT projections.secret_generators2.aggregate_id,` +
+		` projections.secret_generators2.generator_type,` +
+		` projections.secret_generators2.creation_date,` +
+		` projections.secret_generators2.change_date,` +
+		` projections.secret_generators2.resource_owner,` +
+		` projections.secret_generators2.sequence,` +
+		` projections.secret_generators2.length,` +
+		` projections.secret_generators2.expiry,` +
+		` projections.secret_generators2.include_lower_letters,` +
+		` projections.secret_generators2.include_upper_letters,` +
+		` projections.secret_generators2.include_digits,` +
+		` projections.secret_generators2.include_symbols` +
+		` FROM projections.secret_generators2` +
+		` AS OF SYSTEM TIME '-1 ms'`
+	prepareSecretGeneratorCols = []string{
+		"aggregate_id",
+		"generator_type",
+		"creation_date",
+		"change_date",
+		"resource_owner",
+		"sequence",
+		"length",
+		"expiry",
+		"include_lower_letters",
+		"include_upper_letters",
+		"include_digits",
+		"include_symbols",
+	}
+	prepareSecretGeneratorsStmt = `SELECT projections.secret_generators2.aggregate_id,` +
+		` projections.secret_generators2.generator_type,` +
+		` projections.secret_generators2.creation_date,` +
+		` projections.secret_generators2.change_date,` +
+		` projections.secret_generators2.resource_owner,` +
+		` projections.secret_generators2.sequence,` +
+		` projections.secret_generators2.length,` +
+		` projections.secret_generators2.expiry,` +
+		` projections.secret_generators2.include_lower_letters,` +
+		` projections.secret_generators2.include_upper_letters,` +
+		` projections.secret_generators2.include_digits,` +
+		` projections.secret_generators2.include_symbols,` +
+		` COUNT(*) OVER ()` +
+		` FROM projections.secret_generators2` +
+		` AS OF SYSTEM TIME '-1 ms'`
+	prepareSecretGeneratorsCols = []string{
+		"aggregate_id",
+		"generator_type",
+		"creation_date",
+		"change_date",
+		"resource_owner",
+		"sequence",
+		"length",
+		"expiry",
+		"include_lower_letters",
+		"include_upper_letters",
+		"include_digits",
+		"include_symbols",
+		"count",
+	}
 )
 
 func Test_SecretGeneratorsPrepares(t *testing.T) {
@@ -29,20 +90,7 @@ func Test_SecretGeneratorsPrepares(t *testing.T) {
 			prepare: prepareSecretGeneratorsQuery,
 			want: want{
 				sqlExpectations: mockQueries(
-					regexp.QuoteMeta(`SELECT projections.secret_generators2.aggregate_id,`+
-						` projections.secret_generators2.generator_type,`+
-						` projections.secret_generators2.creation_date,`+
-						` projections.secret_generators2.change_date,`+
-						` projections.secret_generators2.resource_owner,`+
-						` projections.secret_generators2.sequence,`+
-						` projections.secret_generators2.length,`+
-						` projections.secret_generators2.expiry,`+
-						` projections.secret_generators2.include_lower_letters,`+
-						` projections.secret_generators2.include_upper_letters,`+
-						` projections.secret_generators2.include_digits,`+
-						` projections.secret_generators2.include_symbols,`+
-						` COUNT(*) OVER ()`+
-						` FROM projections.secret_generators2`),
+					regexp.QuoteMeta(prepareSecretGeneratorsStmt),
 					nil,
 					nil,
 				),
@@ -54,35 +102,8 @@ func Test_SecretGeneratorsPrepares(t *testing.T) {
 			prepare: prepareSecretGeneratorsQuery,
 			want: want{
 				sqlExpectations: mockQueries(
-					regexp.QuoteMeta(`SELECT projections.secret_generators2.aggregate_id,`+
-						` projections.secret_generators2.generator_type,`+
-						` projections.secret_generators2.creation_date,`+
-						` projections.secret_generators2.change_date,`+
-						` projections.secret_generators2.resource_owner,`+
-						` projections.secret_generators2.sequence,`+
-						` projections.secret_generators2.length,`+
-						` projections.secret_generators2.expiry,`+
-						` projections.secret_generators2.include_lower_letters,`+
-						` projections.secret_generators2.include_upper_letters,`+
-						` projections.secret_generators2.include_digits,`+
-						` projections.secret_generators2.include_symbols,`+
-						` COUNT(*) OVER ()`+
-						` FROM projections.secret_generators2`),
-					[]string{
-						"aggregate_id",
-						"generator_type",
-						"creation_date",
-						"change_date",
-						"resource_owner",
-						"sequence",
-						"length",
-						"expiry",
-						"include_lower_letters",
-						"include_upper_letters",
-						"include_digits",
-						"include_symbols",
-						"count",
-					},
+					regexp.QuoteMeta(prepareSecretGeneratorsStmt),
+					prepareSecretGeneratorsCols,
 					[][]driver.Value{
 						{
 							"agg-id",
@@ -128,35 +149,8 @@ func Test_SecretGeneratorsPrepares(t *testing.T) {
 			prepare: prepareSecretGeneratorsQuery,
 			want: want{
 				sqlExpectations: mockQueries(
-					regexp.QuoteMeta(`SELECT projections.secret_generators2.aggregate_id,`+
-						` projections.secret_generators2.generator_type,`+
-						` projections.secret_generators2.creation_date,`+
-						` projections.secret_generators2.change_date,`+
-						` projections.secret_generators2.resource_owner,`+
-						` projections.secret_generators2.sequence,`+
-						` projections.secret_generators2.length,`+
-						` projections.secret_generators2.expiry,`+
-						` projections.secret_generators2.include_lower_letters,`+
-						` projections.secret_generators2.include_upper_letters,`+
-						` projections.secret_generators2.include_digits,`+
-						` projections.secret_generators2.include_symbols,`+
-						` COUNT(*) OVER ()`+
-						` FROM projections.secret_generators2`),
-					[]string{
-						"aggregate_id",
-						"generator_type",
-						"creation_date",
-						"change_date",
-						"resource_owner",
-						"sequence",
-						"length",
-						"expiry",
-						"include_lower_letters",
-						"include_upper_letters",
-						"include_digits",
-						"include_symbols",
-						"count",
-					},
+					regexp.QuoteMeta(prepareSecretGeneratorsStmt),
+					prepareSecretGeneratorsCols,
 					[][]driver.Value{
 						{
 							"agg-id",
@@ -230,20 +224,7 @@ func Test_SecretGeneratorsPrepares(t *testing.T) {
 			prepare: prepareSecretGeneratorsQuery,
 			want: want{
 				sqlExpectations: mockQueryErr(
-					regexp.QuoteMeta(`SELECT projections.secret_generators2.aggregate_id,`+
-						` projections.secret_generators2.generator_type,`+
-						` projections.secret_generators2.creation_date,`+
-						` projections.secret_generators2.change_date,`+
-						` projections.secret_generators2.resource_owner,`+
-						` projections.secret_generators2.sequence,`+
-						` projections.secret_generators2.length,`+
-						` projections.secret_generators2.expiry,`+
-						` projections.secret_generators2.include_lower_letters,`+
-						` projections.secret_generators2.include_upper_letters,`+
-						` projections.secret_generators2.include_digits,`+
-						` projections.secret_generators2.include_symbols,`+
-						` COUNT(*) OVER ()`+
-						` FROM projections.secret_generators2`),
+					regexp.QuoteMeta(prepareSecretGeneratorsStmt),
 					sql.ErrConnDone,
 				),
 				err: func(err error) (error, bool) {
@@ -253,31 +234,19 @@ func Test_SecretGeneratorsPrepares(t *testing.T) {
 					return nil, true
 				},
 			},
-			object: nil,
+			object: (*SecretGenerators)(nil),
 		},
 		{
 			name:    "prepareSecretGeneratorQuery no result",
 			prepare: prepareSecretGeneratorQuery,
 			want: want{
-				sqlExpectations: mockQueries(
-					`SELECT projections.secret_generators2.aggregate_id,`+
-						` projections.secret_generators2.generator_type,`+
-						` projections.secret_generators2.creation_date,`+
-						` projections.secret_generators2.change_date,`+
-						` projections.secret_generators2.resource_owner,`+
-						` projections.secret_generators2.sequence,`+
-						` projections.secret_generators2.length,`+
-						` projections.secret_generators2.expiry,`+
-						` projections.secret_generators2.include_lower_letters,`+
-						` projections.secret_generators2.include_upper_letters,`+
-						` projections.secret_generators2.include_digits,`+
-						` projections.secret_generators2.include_symbols`+
-						` FROM projections.secret_generators2`,
+				sqlExpectations: mockQueriesScanErr(
+					prepareSecretGeneratorStmt,
 					nil,
 					nil,
 				),
 				err: func(err error) (error, bool) {
-					if !errs.IsNotFound(err) {
+					if !zerrors.IsNotFound(err) {
 						return fmt.Errorf("err should be zitadel.NotFoundError got: %w", err), false
 					}
 					return nil, true
@@ -290,33 +259,8 @@ func Test_SecretGeneratorsPrepares(t *testing.T) {
 			prepare: prepareSecretGeneratorQuery,
 			want: want{
 				sqlExpectations: mockQuery(
-					regexp.QuoteMeta(`SELECT projections.secret_generators2.aggregate_id,`+
-						` projections.secret_generators2.generator_type,`+
-						` projections.secret_generators2.creation_date,`+
-						` projections.secret_generators2.change_date,`+
-						` projections.secret_generators2.resource_owner,`+
-						` projections.secret_generators2.sequence,`+
-						` projections.secret_generators2.length,`+
-						` projections.secret_generators2.expiry,`+
-						` projections.secret_generators2.include_lower_letters,`+
-						` projections.secret_generators2.include_upper_letters,`+
-						` projections.secret_generators2.include_digits,`+
-						` projections.secret_generators2.include_symbols`+
-						` FROM projections.secret_generators2`),
-					[]string{
-						"aggregate_id",
-						"generator_type",
-						"creation_date",
-						"change_date",
-						"resource_owner",
-						"sequence",
-						"length",
-						"expiry",
-						"include_lower_letters",
-						"include_upper_letters",
-						"include_digits",
-						"include_symbols",
-					},
+					regexp.QuoteMeta(prepareSecretGeneratorStmt),
+					prepareSecretGeneratorCols,
 					[]driver.Value{
 						"agg-id",
 						domain.SecretGeneratorTypeInitCode,
@@ -353,19 +297,7 @@ func Test_SecretGeneratorsPrepares(t *testing.T) {
 			prepare: prepareSecretGeneratorQuery,
 			want: want{
 				sqlExpectations: mockQueryErr(
-					regexp.QuoteMeta(`SELECT projections.secret_generators2.aggregate_id,`+
-						` projections.secret_generators2.generator_type,`+
-						` projections.secret_generators2.creation_date,`+
-						` projections.secret_generators2.change_date,`+
-						` projections.secret_generators2.resource_owner,`+
-						` projections.secret_generators2.sequence,`+
-						` projections.secret_generators2.length,`+
-						` projections.secret_generators2.expiry,`+
-						` projections.secret_generators2.include_lower_letters,`+
-						` projections.secret_generators2.include_upper_letters,`+
-						` projections.secret_generators2.include_digits,`+
-						` projections.secret_generators2.include_symbols`+
-						` FROM projections.secret_generators2`),
+					regexp.QuoteMeta(prepareSecretGeneratorStmt),
 					sql.ErrConnDone,
 				),
 				err: func(err error) (error, bool) {
@@ -375,12 +307,12 @@ func Test_SecretGeneratorsPrepares(t *testing.T) {
 					return nil, true
 				},
 			},
-			object: nil,
+			object: (*SecretGenerator)(nil),
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assertPrepare(t, tt.prepare, tt.object, tt.want.sqlExpectations, tt.want.err)
+			assertPrepare(t, tt.prepare, tt.object, tt.want.sqlExpectations, tt.want.err, defaultPrepareArgs...)
 		})
 	}
 }

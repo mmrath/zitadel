@@ -12,13 +12,15 @@ import { TranslateModule } from '@ngx-translate/core';
 import { HasRoleModule } from 'src/app/directives/has-role/has-role.module';
 import { HasRolePipeModule } from 'src/app/pipes/has-role-pipe/has-role-pipe.module';
 
-import { SharedModule } from '../shared/shared.module';
+import { MatProgressBarModule } from '@angular/material/progress-bar';
+import OnboardingCardModule from '../onboarding-card/onboarding-card.module';
 import { NavComponent } from './nav.component';
 
 @NgModule({
   declarations: [NavComponent],
   imports: [
     CommonModule,
+    OnboardingCardModule,
     FormsModule,
     ReactiveFormsModule,
     TranslateModule,
@@ -26,11 +28,11 @@ import { NavComponent } from './nav.component';
     RouterModule,
     MatTooltipModule,
     HasRolePipeModule,
+    MatProgressBarModule,
     HasRoleModule,
     MatMenuModule,
     MatButtonModule,
     MatProgressSpinnerModule,
-    SharedModule,
     OverlayModule,
   ],
   exports: [NavComponent],

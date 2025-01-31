@@ -5,7 +5,6 @@ import (
 	"time"
 
 	http_util "github.com/zitadel/zitadel/internal/api/http"
-	"github.com/zitadel/zitadel/internal/crypto"
 	"github.com/zitadel/zitadel/internal/eventstore/v1/models"
 )
 
@@ -28,7 +27,7 @@ type OIDCApp struct {
 	AppID                    string
 	AppName                  string
 	ClientID                 string
-	ClientSecret             *crypto.CryptoValue
+	EncodedHash              string
 	ClientSecretString       string
 	RedirectUris             []string
 	ResponseTypes            []OIDCResponseType
@@ -45,6 +44,10 @@ type OIDCApp struct {
 	IDTokenUserinfoAssertion bool
 	ClockSkew                time.Duration
 	AdditionalOrigins        []string
+	SkipNativeAppSuccessPage bool
+	BackChannelLogoutURI     string
+	LoginVersion             LoginVersion
+	LoginBaseURI             string
 
 	State AppState
 }
@@ -61,8 +64,8 @@ func (a *OIDCApp) setClientID(clientID string) {
 	a.ClientID = clientID
 }
 
-func (a *OIDCApp) setClientSecret(clientSecret *crypto.CryptoValue) {
-	a.ClientSecret = clientSecret
+func (a *OIDCApp) setClientSecret(encodedHash string) {
+	a.EncodedHash = encodedHash
 }
 
 func (a *OIDCApp) requiresClientSecret() bool {
@@ -78,9 +81,20 @@ const (
 type OIDCResponseType int32
 
 const (
-	OIDCResponseTypeCode OIDCResponseType = iota
+	OIDCResponseTypeUnspecified OIDCResponseType = iota - 1 // Negative offset not to break existing configs.
+	OIDCResponseTypeCode
 	OIDCResponseTypeIDToken
 	OIDCResponseTypeIDTokenToken
+)
+
+//go:generate enumer -type OIDCResponseMode -transform snake -trimprefix OIDCResponseMode
+type OIDCResponseMode int
+
+const (
+	OIDCResponseModeUnspecified OIDCResponseMode = iota
+	OIDCResponseModeQuery
+	OIDCResponseModeFragment
+	OIDCResponseModeFormPost
 )
 
 type OIDCGrantType int32
@@ -89,6 +103,8 @@ const (
 	OIDCGrantTypeAuthorizationCode OIDCGrantType = iota
 	OIDCGrantTypeImplicit
 	OIDCGrantTypeRefreshToken
+	OIDCGrantTypeDeviceCode
+	OIDCGrantTypeTokenExchange
 )
 
 type OIDCApplicationType int32
@@ -139,7 +155,7 @@ func (a *OIDCApp) IsValid() bool {
 
 func (a *OIDCApp) OriginsValid() bool {
 	for _, origin := range a.AdditionalOrigins {
-		if !http_util.IsOrigin(origin) {
+		if !http_util.IsOrigin(strings.TrimSpace(origin)) {
 			return false
 		}
 	}
@@ -147,17 +163,22 @@ func (a *OIDCApp) OriginsValid() bool {
 }
 
 func ContainsRequiredGrantTypes(responseTypes []OIDCResponseType, grantTypes []OIDCGrantType) bool {
-	required := RequiredOIDCGrantTypes(responseTypes)
+	required := RequiredOIDCGrantTypes(responseTypes, grantTypes)
 	return ContainsOIDCGrantTypes(required, grantTypes)
 }
 
-func RequiredOIDCGrantTypes(responseTypes []OIDCResponseType) (grantTypes []OIDCGrantType) {
+func RequiredOIDCGrantTypes(responseTypes []OIDCResponseType, grantTypesSet []OIDCGrantType) (grantTypes []OIDCGrantType) {
 	var implicit bool
 
 	for _, r := range responseTypes {
 		switch r {
 		case OIDCResponseTypeCode:
-			grantTypes = append(grantTypes, OIDCGrantTypeAuthorizationCode)
+			// #5684 when "Device Code" is selected, "Authorization Code" is no longer a hard requirement
+			if !containsOIDCGrantType(grantTypesSet, OIDCGrantTypeDeviceCode) {
+				grantTypes = append(grantTypes, OIDCGrantTypeAuthorizationCode)
+			} else {
+				grantTypes = append(grantTypes, OIDCGrantTypeDeviceCode)
+			}
 		case OIDCResponseTypeIDToken, OIDCResponseTypeIDTokenToken:
 			if !implicit {
 				implicit = true
@@ -170,7 +191,7 @@ func RequiredOIDCGrantTypes(responseTypes []OIDCResponseType) (grantTypes []OIDC
 }
 
 func (a *OIDCApp) getRequiredGrantTypes() []OIDCGrantType {
-	return RequiredOIDCGrantTypes(a.ResponseTypes)
+	return RequiredOIDCGrantTypes(a.ResponseTypes, a.GrantTypes)
 }
 
 func ContainsOIDCGrantTypes(shouldContain, list []OIDCGrantType) bool {
@@ -211,7 +232,7 @@ func GetOIDCV1Compliance(appType OIDCApplicationType, grantTypes []OIDCGrantType
 
 	checkGrantTypesCombination(compliance, grantTypes)
 	checkRedirectURIs(compliance, grantTypes, appType, redirectUris)
-	checkApplicaitonType(compliance, appType, authMethod)
+	checkApplicationType(compliance, appType, authMethod)
 
 	if compliance.NoneCompliant {
 		compliance.Problems = append([]string{"Application.OIDC.V1.NotCompliant"}, compliance.Problems...)
@@ -220,14 +241,15 @@ func GetOIDCV1Compliance(appType OIDCApplicationType, grantTypes []OIDCGrantType
 }
 
 func checkGrantTypesCombination(compliance *Compliance, grantTypes []OIDCGrantType) {
-	if containsOIDCGrantType(grantTypes, OIDCGrantTypeRefreshToken) && !containsOIDCGrantType(grantTypes, OIDCGrantTypeAuthorizationCode) {
+	if !containsOIDCGrantType(grantTypes, OIDCGrantTypeDeviceCode) && containsOIDCGrantType(grantTypes, OIDCGrantTypeRefreshToken) && !containsOIDCGrantType(grantTypes, OIDCGrantTypeAuthorizationCode) {
 		compliance.NoneCompliant = true
 		compliance.Problems = append(compliance.Problems, "Application.OIDC.V1.GrantType.Refresh.NoAuthCode")
 	}
 }
 
 func checkRedirectURIs(compliance *Compliance, grantTypes []OIDCGrantType, appType OIDCApplicationType, redirectUris []string) {
-	if len(redirectUris) == 0 {
+	// See #5684 for OIDCGrantTypeDeviceCode and redirectUris further explanation
+	if len(redirectUris) == 0 && (!containsOIDCGrantType(grantTypes, OIDCGrantTypeDeviceCode) || (containsOIDCGrantType(grantTypes, OIDCGrantTypeDeviceCode) && containsOIDCGrantType(grantTypes, OIDCGrantTypeAuthorizationCode))) {
 		compliance.NoneCompliant = true
 		compliance.Problems = append([]string{"Application.OIDC.V1.NoRedirectUris"}, compliance.Problems...)
 	}
@@ -244,7 +266,7 @@ func checkRedirectURIs(compliance *Compliance, grantTypes []OIDCGrantType, appTy
 	}
 }
 
-func checkApplicaitonType(compliance *Compliance, appType OIDCApplicationType, authMethod OIDCAuthMethodType) {
+func checkApplicationType(compliance *Compliance, appType OIDCApplicationType, authMethod OIDCAuthMethodType) {
 	switch appType {
 	case OIDCApplicationTypeNative:
 		GetOIDCV1NativeApplicationCompliance(compliance, authMethod)

@@ -1,10 +1,11 @@
 package login
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/zitadel/zitadel/internal/domain"
-	caos_errs "github.com/zitadel/zitadel/internal/errors"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 const (
@@ -36,34 +37,38 @@ func (l *Login) handleLoginSuccess(w http.ResponseWriter, r *http.Request) {
 }
 
 func (l *Login) renderSuccessAndCallback(w http.ResponseWriter, r *http.Request, authReq *domain.AuthRequest, err error) {
-	var errID, errMessage string
-	if err != nil {
-		errID, errMessage = l.getErrorMessage(r, err)
-	}
+	translator := l.getTranslator(r.Context(), authReq)
 	data := loginSuccessData{
-		userData: l.getUserData(r, authReq, "LoginSuccess.Title","", errID, errMessage),
+		userData: l.getUserData(r, authReq, translator, "LoginSuccess.Title", "", err),
 	}
 	if authReq != nil {
-		//the id will be set via the html (maybe change this with the login refactoring)
-		if _, ok := authReq.Request.(*domain.AuthRequestOIDC); ok {
-			data.RedirectURI = l.oidcAuthCallbackURL(r.Context(), "")
-		} else if _, ok := authReq.Request.(*domain.AuthRequestSAML); ok {
-			data.RedirectURI = l.samlAuthCallbackURL(r.Context(), "")
+		data.RedirectURI, err = l.authRequestCallback(r.Context(), authReq)
+		if err != nil {
+			l.renderInternalError(w, r, authReq, err)
+			return
 		}
 	}
-	l.renderer.RenderTemplate(w, r, l.getTranslator(r.Context(), authReq), l.renderer.Templates[tmplLoginSuccess], data, nil)
+	l.renderer.RenderTemplate(w, r, translator, l.renderer.Templates[tmplLoginSuccess], data, nil)
 }
 
 func (l *Login) redirectToCallback(w http.ResponseWriter, r *http.Request, authReq *domain.AuthRequest) {
-	var callback string
-	switch authReq.Request.(type) {
-	case *domain.AuthRequestOIDC:
-		callback = l.oidcAuthCallbackURL(r.Context(), authReq.ID)
-	case *domain.AuthRequestSAML:
-		callback = l.samlAuthCallbackURL(r.Context(), authReq.ID)
-	default:
-		l.renderInternalError(w, r, authReq, caos_errs.ThrowInternal(nil, "LOGIN-rhjQF", "Errors.AuthRequest.RequestTypeNotSupported"))
+	callback, err := l.authRequestCallback(r.Context(), authReq)
+	if err != nil {
+		l.renderInternalError(w, r, authReq, err)
 		return
 	}
 	http.Redirect(w, r, callback, http.StatusFound)
+}
+
+func (l *Login) authRequestCallback(ctx context.Context, authReq *domain.AuthRequest) (string, error) {
+	switch authReq.Request.(type) {
+	case *domain.AuthRequestOIDC:
+		return l.oidcAuthCallbackURL(ctx, authReq.ID), nil
+	case *domain.AuthRequestSAML:
+		return l.samlAuthCallbackURL(ctx, authReq.ID), nil
+	case *domain.AuthRequestDevice:
+		return l.deviceAuthCallbackURL(authReq.ID), nil
+	default:
+		return "", zerrors.ThrowInternal(nil, "LOGIN-rhjQF", "Errors.AuthRequest.RequestTypeNotSupported")
+	}
 }

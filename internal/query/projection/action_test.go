@@ -5,12 +5,12 @@ import (
 	"time"
 
 	"github.com/zitadel/zitadel/internal/domain"
-	"github.com/zitadel/zitadel/internal/errors"
 	"github.com/zitadel/zitadel/internal/eventstore"
-	"github.com/zitadel/zitadel/internal/eventstore/handler"
-	"github.com/zitadel/zitadel/internal/eventstore/repository"
+	"github.com/zitadel/zitadel/internal/eventstore/handler/v2"
 	"github.com/zitadel/zitadel/internal/repository/action"
 	"github.com/zitadel/zitadel/internal/repository/instance"
+	"github.com/zitadel/zitadel/internal/repository/org"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 func TestActionProjection_reduces(t *testing.T) {
@@ -26,21 +26,23 @@ func TestActionProjection_reduces(t *testing.T) {
 		{
 			name: "reduceActionAdded",
 			args: args{
-				event: getEvent(testEvent(
-					repository.EventType(action.AddedEventType),
-					action.AggregateType,
-					[]byte(`{"name": "name", "script":"name(){}","timeout": 3000000000, "allowedToFail": true}`),
-				), action.AddedEventMapper),
+				event: getEvent(
+					testEvent(
+						action.AddedEventType,
+						action.AggregateType,
+						[]byte(`{"name": "name", "script":"name(){}","timeout": 3000000000, "allowedToFail": true}`),
+					),
+					action.AddedEventMapper,
+				),
 			},
 			reduce: (&actionProjection{}).reduceActionAdded,
 			want: wantReduce{
-				aggregateType:    eventstore.AggregateType("action"),
-				sequence:         15,
-				previousSequence: 10,
+				aggregateType: eventstore.AggregateType("action"),
+				sequence:      15,
 				executer: &testExecuter{
 					executions: []execution{
 						{
-							expectedStmt: "INSERT INTO projections.actions2 (id, creation_date, change_date, resource_owner, instance_id, sequence, name, script, timeout, allowed_to_fail, action_state) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+							expectedStmt: "INSERT INTO projections.actions3 (id, creation_date, change_date, resource_owner, instance_id, sequence, name, script, timeout, allowed_to_fail, action_state) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
 							expectedArgs: []interface{}{
 								"agg-id",
 								anyArg{},
@@ -62,21 +64,23 @@ func TestActionProjection_reduces(t *testing.T) {
 		{
 			name: "reduceActionChanged",
 			args: args{
-				event: getEvent(testEvent(
-					repository.EventType(action.ChangedEventType),
-					action.AggregateType,
-					[]byte(`{"name": "name2", "script":"name2(){}"}`),
-				), action.ChangedEventMapper),
+				event: getEvent(
+					testEvent(
+						action.ChangedEventType,
+						action.AggregateType,
+						[]byte(`{"name": "name2", "script":"name2(){}"}`),
+					),
+					action.ChangedEventMapper,
+				),
 			},
 			reduce: (&actionProjection{}).reduceActionChanged,
 			want: wantReduce{
-				aggregateType:    eventstore.AggregateType("action"),
-				sequence:         15,
-				previousSequence: 10,
+				aggregateType: eventstore.AggregateType("action"),
+				sequence:      15,
 				executer: &testExecuter{
 					executions: []execution{
 						{
-							expectedStmt: "UPDATE projections.actions2 SET (change_date, sequence, name, script) = ($1, $2, $3, $4) WHERE (id = $5) AND (instance_id = $6)",
+							expectedStmt: "UPDATE projections.actions3 SET (change_date, sequence, name, script) = ($1, $2, $3, $4) WHERE (id = $5) AND (instance_id = $6)",
 							expectedArgs: []interface{}{
 								anyArg{},
 								uint64(15),
@@ -93,21 +97,23 @@ func TestActionProjection_reduces(t *testing.T) {
 		{
 			name: "reduceActionDeactivated",
 			args: args{
-				event: getEvent(testEvent(
-					repository.EventType(action.ChangedEventType),
-					action.AggregateType,
-					[]byte(`{}`),
-				), action.DeactivatedEventMapper),
+				event: getEvent(
+					testEvent(
+						action.DeactivatedEventType,
+						action.AggregateType,
+						[]byte(`{}`),
+					),
+					action.DeactivatedEventMapper,
+				),
 			},
 			reduce: (&actionProjection{}).reduceActionDeactivated,
 			want: wantReduce{
-				aggregateType:    eventstore.AggregateType("action"),
-				sequence:         15,
-				previousSequence: 10,
+				aggregateType: eventstore.AggregateType("action"),
+				sequence:      15,
 				executer: &testExecuter{
 					executions: []execution{
 						{
-							expectedStmt: "UPDATE projections.actions2 SET (change_date, sequence, action_state) = ($1, $2, $3) WHERE (id = $4) AND (instance_id = $5)",
+							expectedStmt: "UPDATE projections.actions3 SET (change_date, sequence, action_state) = ($1, $2, $3) WHERE (id = $4) AND (instance_id = $5)",
 							expectedArgs: []interface{}{
 								anyArg{},
 								uint64(15),
@@ -123,21 +129,23 @@ func TestActionProjection_reduces(t *testing.T) {
 		{
 			name: "reduceActionReactivated",
 			args: args{
-				event: getEvent(testEvent(
-					repository.EventType(action.ChangedEventType),
-					action.AggregateType,
-					[]byte(`{}`),
-				), action.ReactivatedEventMapper),
+				event: getEvent(
+					testEvent(
+						action.ReactivatedEventType,
+						action.AggregateType,
+						[]byte(`{}`),
+					),
+					action.ReactivatedEventMapper,
+				),
 			},
 			reduce: (&actionProjection{}).reduceActionReactivated,
 			want: wantReduce{
-				aggregateType:    eventstore.AggregateType("action"),
-				sequence:         15,
-				previousSequence: 10,
+				aggregateType: eventstore.AggregateType("action"),
+				sequence:      15,
 				executer: &testExecuter{
 					executions: []execution{
 						{
-							expectedStmt: "UPDATE projections.actions2 SET (change_date, sequence, action_state) = ($1, $2, $3) WHERE (id = $4) AND (instance_id = $5)",
+							expectedStmt: "UPDATE projections.actions3 SET (change_date, sequence, action_state) = ($1, $2, $3) WHERE (id = $4) AND (instance_id = $5)",
 							expectedArgs: []interface{}{
 								anyArg{},
 								uint64(15),
@@ -153,21 +161,23 @@ func TestActionProjection_reduces(t *testing.T) {
 		{
 			name: "reduceActionRemoved",
 			args: args{
-				event: getEvent(testEvent(
-					repository.EventType(action.ChangedEventType),
-					action.AggregateType,
-					[]byte(`{}`),
-				), action.RemovedEventMapper),
+				event: getEvent(
+					testEvent(
+						action.RemovedEventType,
+						action.AggregateType,
+						[]byte(`{}`),
+					),
+					action.RemovedEventMapper,
+				),
 			},
 			reduce: (&actionProjection{}).reduceActionRemoved,
 			want: wantReduce{
-				aggregateType:    eventstore.AggregateType("action"),
-				sequence:         15,
-				previousSequence: 10,
+				aggregateType: eventstore.AggregateType("action"),
+				sequence:      15,
 				executer: &testExecuter{
 					executions: []execution{
 						{
-							expectedStmt: "DELETE FROM projections.actions2 WHERE (id = $1) AND (instance_id = $2)",
+							expectedStmt: "DELETE FROM projections.actions3 WHERE (id = $1) AND (instance_id = $2)",
 							expectedArgs: []interface{}{
 								"agg-id",
 								"instance-id",
@@ -178,23 +188,54 @@ func TestActionProjection_reduces(t *testing.T) {
 			},
 		},
 		{
-			name: "reduceInstanceRemoved",
+			name: "reduceOwnerRemoved",
 			args: args{
-				event: getEvent(testEvent(
-					repository.EventType(instance.InstanceRemovedEventType),
-					instance.AggregateType,
-					nil,
-				), instance.InstanceRemovedEventMapper),
+				event: getEvent(
+					testEvent(
+						org.OrgRemovedEventType,
+						org.AggregateType,
+						nil,
+					),
+					org.OrgRemovedEventMapper,
+				),
 			},
-			reduce: reduceInstanceRemovedHelper(ActionInstanceIDCol),
+			reduce: (&actionProjection{}).reduceOwnerRemoved,
 			want: wantReduce{
-				aggregateType:    eventstore.AggregateType("instance"),
-				sequence:         15,
-				previousSequence: 10,
+				aggregateType: eventstore.AggregateType("org"),
+				sequence:      15,
 				executer: &testExecuter{
 					executions: []execution{
 						{
-							expectedStmt: "DELETE FROM projections.actions2 WHERE (instance_id = $1)",
+							expectedStmt: "DELETE FROM projections.actions3 WHERE (instance_id = $1) AND (resource_owner = $2)",
+							expectedArgs: []interface{}{
+								"instance-id",
+								"agg-id",
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "reduceInstanceRemoved",
+			args: args{
+				event: getEvent(
+					testEvent(
+						instance.InstanceRemovedEventType,
+						instance.AggregateType,
+						nil,
+					),
+					instance.InstanceRemovedEventMapper,
+				),
+			},
+			reduce: reduceInstanceRemovedHelper(ActionInstanceIDCol),
+			want: wantReduce{
+				aggregateType: eventstore.AggregateType("instance"),
+				sequence:      15,
+				executer: &testExecuter{
+					executions: []execution{
+						{
+							expectedStmt: "DELETE FROM projections.actions3 WHERE (instance_id = $1)",
 							expectedArgs: []interface{}{
 								"agg-id",
 							},
@@ -208,7 +249,7 @@ func TestActionProjection_reduces(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			event := baseEvent(t)
 			got, err := tt.reduce(event)
-			if _, ok := err.(errors.InvalidArgument); !ok {
+			if ok := zerrors.IsErrorInvalidArgument(err); !ok {
 				t.Errorf("no wrong event mapping: %v, got: %v", err, got)
 			}
 

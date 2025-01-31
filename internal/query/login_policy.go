@@ -3,16 +3,20 @@ package query
 import (
 	"context"
 	"database/sql"
-	errs "errors"
+	"errors"
 	"time"
 
 	sq "github.com/Masterminds/squirrel"
+	"github.com/zitadel/logging"
 
 	"github.com/zitadel/zitadel/internal/api/authz"
+	"github.com/zitadel/zitadel/internal/api/call"
 	"github.com/zitadel/zitadel/internal/database"
 	"github.com/zitadel/zitadel/internal/domain"
-	"github.com/zitadel/zitadel/internal/errors"
+	"github.com/zitadel/zitadel/internal/eventstore/handler/v2"
 	"github.com/zitadel/zitadel/internal/query/projection"
+	"github.com/zitadel/zitadel/internal/telemetry/tracing"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 type LoginPolicy struct {
@@ -24,8 +28,9 @@ type LoginPolicy struct {
 	AllowUsernamePassword      bool
 	AllowExternalIDPs          bool
 	ForceMFA                   bool
-	SecondFactors              database.EnumArray[domain.SecondFactorType]
-	MultiFactors               database.EnumArray[domain.MultiFactorType]
+	ForceMFALocalOnly          bool
+	SecondFactors              database.NumberArray[domain.SecondFactorType]
+	MultiFactors               database.NumberArray[domain.MultiFactorType]
 	PasswordlessType           domain.PasswordlessType
 	IsDefault                  bool
 	HidePasswordReset          bool
@@ -34,22 +39,22 @@ type LoginPolicy struct {
 	DisableLoginWithEmail      bool
 	DisableLoginWithPhone      bool
 	DefaultRedirectURI         string
-	PasswordCheckLifetime      time.Duration
-	ExternalLoginCheckLifetime time.Duration
-	MFAInitSkipLifetime        time.Duration
-	SecondFactorCheckLifetime  time.Duration
-	MultiFactorCheckLifetime   time.Duration
+	PasswordCheckLifetime      database.Duration
+	ExternalLoginCheckLifetime database.Duration
+	MFAInitSkipLifetime        database.Duration
+	SecondFactorCheckLifetime  database.Duration
+	MultiFactorCheckLifetime   database.Duration
 	IDPLinks                   []*IDPLoginPolicyLink
 }
 
 type SecondFactors struct {
 	SearchResponse
-	Factors database.EnumArray[domain.SecondFactorType]
+	Factors database.NumberArray[domain.SecondFactorType]
 }
 
 type MultiFactors struct {
 	SearchResponse
-	Factors database.EnumArray[domain.MultiFactorType]
+	Factors database.NumberArray[domain.MultiFactorType]
 }
 
 var (
@@ -91,6 +96,10 @@ var (
 	}
 	LoginPolicyColumnForceMFA = Column{
 		name:  projection.LoginPolicyForceMFACol,
+		table: loginPolicyTable,
+	}
+	LoginPolicyColumnForceMFALocalOnly = Column{
+		name:  projection.LoginPolicyForceMFALocalOnlyCol,
 		table: loginPolicyTable,
 	}
 	LoginPolicyColumnSecondFactors = Column{
@@ -149,18 +158,91 @@ var (
 		name:  projection.SecondFactorCheckLifetimeCol,
 		table: loginPolicyTable,
 	}
-	LoginPolicyColumnMultiFacotrCheckLifetime = Column{
+	LoginPolicyColumnMultiFactorCheckLifetime = Column{
 		name:  projection.MultiFactorCheckLifetimeCol,
+		table: loginPolicyTable,
+	}
+	LoginPolicyColumnOwnerRemoved = Column{
+		name:  projection.LoginPolicyOwnerRemovedCol,
 		table: loginPolicyTable,
 	}
 )
 
-func (q *Queries) LoginPolicyByID(ctx context.Context, shouldTriggerBulk bool, orgID string) (*LoginPolicy, error) {
+func (q *Queries) LoginPolicyByID(ctx context.Context, shouldTriggerBulk bool, orgID string, withOwnerRemoved bool) (policy *LoginPolicy, err error) {
+	ctx, span := tracing.NewSpan(ctx)
+	defer func() { span.EndWithError(err) }()
+
 	if shouldTriggerBulk {
-		projection.LoginPolicyProjection.Trigger(ctx)
+		_, traceSpan := tracing.NewNamedSpan(ctx, "TriggerLoginPolicyProjection")
+		ctx, err = projection.LoginPolicyProjection.Trigger(ctx, handler.WithAwaitRunning())
+		logging.OnError(err).Debug("trigger failed")
+		traceSpan.EndWithError(err)
+	}
+	eq := sq.Eq{LoginPolicyColumnInstanceID.identifier(): authz.GetInstance(ctx).InstanceID()}
+	if !withOwnerRemoved {
+		eq[LoginPolicyColumnOwnerRemoved.identifier()] = false
 	}
 
-	query, scan := prepareLoginPolicyQuery()
+	query, scan := prepareLoginPolicyQuery(ctx, q.client)
+	stmt, args, err := query.Where(
+		sq.And{
+			eq,
+			sq.Or{
+				sq.Eq{LoginPolicyColumnOrgID.identifier(): orgID},
+				sq.Eq{LoginPolicyColumnOrgID.identifier(): authz.GetInstance(ctx).InstanceID()},
+			},
+		}).Limit(1).OrderBy(LoginPolicyColumnIsDefault.identifier()).ToSql()
+	if err != nil {
+		return nil, zerrors.ThrowInternal(err, "QUERY-scVHo", "Errors.Query.SQLStatement")
+	}
+
+	err = q.client.QueryContext(ctx, func(rows *sql.Rows) error {
+		policy, err = scan(rows)
+		return err
+	}, stmt, args...)
+	if err != nil {
+		return nil, zerrors.ThrowInternal(err, "QUERY-SWgr3", "Errors.Internal")
+	}
+	return policy, q.addLinksToLoginPolicy(ctx, policy)
+}
+
+func (q *Queries) addLinksToLoginPolicy(ctx context.Context, policy *LoginPolicy) error {
+	links, err := q.IDPLoginPolicyLinks(ctx, policy.OrgID, &IDPLoginPolicyLinksSearchQuery{}, false)
+	if err != nil {
+		return zerrors.ThrowInternal(err, "QUERY-aa4Ve", "Errors.Internal")
+	}
+	policy.IDPLinks = append(policy.IDPLinks, links.Links...)
+	return nil
+}
+
+func (q *Queries) DefaultLoginPolicy(ctx context.Context) (policy *LoginPolicy, err error) {
+	ctx, span := tracing.NewSpan(ctx)
+	defer func() { span.EndWithError(err) }()
+
+	query, scan := prepareLoginPolicyQuery(ctx, q.client)
+	stmt, args, err := query.Where(sq.Eq{
+		LoginPolicyColumnOrgID.identifier():      authz.GetInstance(ctx).InstanceID(),
+		LoginPolicyColumnInstanceID.identifier(): authz.GetInstance(ctx).InstanceID(),
+	}).OrderBy(LoginPolicyColumnIsDefault.identifier()).ToSql()
+	if err != nil {
+		return nil, zerrors.ThrowInternal(err, "QUERY-t4TBK", "Errors.Query.SQLStatement")
+	}
+
+	err = q.client.QueryContext(ctx, func(rows *sql.Rows) error {
+		policy, err = scan(rows)
+		return err
+	}, stmt, args...)
+	if err != nil {
+		return nil, zerrors.ThrowInternal(err, "QUERY-SArt2", "Errors.Internal")
+	}
+	return policy, q.addLinksToLoginPolicy(ctx, policy)
+}
+
+func (q *Queries) SecondFactorsByOrg(ctx context.Context, orgID string) (factors *SecondFactors, err error) {
+	ctx, span := tracing.NewSpan(ctx)
+	defer func() { span.EndWithError(err) }()
+
+	query, scan := prepareLoginPolicy2FAsQuery(ctx, q.client)
 	stmt, args, err := query.Where(
 		sq.And{
 			sq.Eq{
@@ -178,35 +260,49 @@ func (q *Queries) LoginPolicyByID(ctx context.Context, shouldTriggerBulk bool, o
 		OrderBy(LoginPolicyColumnIsDefault.identifier()).
 		Limit(1).ToSql()
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "QUERY-scVHo", "Errors.Query.SQLStatement")
+		return nil, zerrors.ThrowInternal(err, "QUERY-scVHo", "Errors.Query.SQLStatement")
 	}
 
-	rows, err := q.client.QueryContext(ctx, stmt, args...)
+	err = q.client.QueryRowContext(ctx, func(row *sql.Row) error {
+		factors, err = scan(row)
+		return err
+	}, stmt, args...)
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "QUERY-SWgr3", "Errors.Internal")
+		return nil, err
 	}
-	return scan(rows)
+	factors.State, err = q.latestState(ctx, loginPolicyTable)
+	return factors, err
 }
 
-func (q *Queries) DefaultLoginPolicy(ctx context.Context) (*LoginPolicy, error) {
-	query, scan := prepareLoginPolicyQuery()
+func (q *Queries) DefaultSecondFactors(ctx context.Context) (factors *SecondFactors, err error) {
+	ctx, span := tracing.NewSpan(ctx)
+	defer func() { span.EndWithError(err) }()
+
+	query, scan := prepareLoginPolicy2FAsQuery(ctx, q.client)
 	stmt, args, err := query.Where(sq.Eq{
 		LoginPolicyColumnOrgID.identifier():      authz.GetInstance(ctx).InstanceID(),
 		LoginPolicyColumnInstanceID.identifier(): authz.GetInstance(ctx).InstanceID(),
 	}).OrderBy(LoginPolicyColumnIsDefault.identifier()).ToSql()
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "QUERY-t4TBK", "Errors.Query.SQLStatement")
+		return nil, zerrors.ThrowInternal(err, "QUERY-CZ2Nv", "Errors.Query.SQLStatement")
 	}
 
-	rows, err := q.client.QueryContext(ctx, stmt, args...)
+	err = q.client.QueryRowContext(ctx, func(row *sql.Row) error {
+		factors, err = scan(row)
+		return err
+	}, stmt, args...)
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "QUERY-SArt2", "Errors.Internal")
+		return nil, err
 	}
-	return scan(rows)
+	factors.State, err = q.latestState(ctx, loginPolicyTable)
+	return factors, err
 }
 
-func (q *Queries) SecondFactorsByOrg(ctx context.Context, orgID string) (*SecondFactors, error) {
-	query, scan := prepareLoginPolicy2FAsQuery()
+func (q *Queries) MultiFactorsByOrg(ctx context.Context, orgID string) (factors *MultiFactors, err error) {
+	ctx, span := tracing.NewSpan(ctx)
+	defer func() { span.EndWithError(err) }()
+
+	query, scan := prepareLoginPolicyMFAsQuery(ctx, q.client)
 	stmt, args, err := query.Where(
 		sq.And{
 			sq.Eq{
@@ -224,88 +320,45 @@ func (q *Queries) SecondFactorsByOrg(ctx context.Context, orgID string) (*Second
 		OrderBy(LoginPolicyColumnIsDefault.identifier()).
 		Limit(1).ToSql()
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "QUERY-scVHo", "Errors.Query.SQLStatement")
+		return nil, zerrors.ThrowInternal(err, "QUERY-B4o7h", "Errors.Query.SQLStatement")
 	}
 
-	row := q.client.QueryRowContext(ctx, stmt, args...)
-	factors, err := scan(row)
+	err = q.client.QueryRowContext(ctx, func(row *sql.Row) error {
+		factors, err = scan(row)
+		return err
+	}, stmt, args...)
 	if err != nil {
 		return nil, err
 	}
-	factors.LatestSequence, err = q.latestSequence(ctx, loginPolicyTable)
+	factors.State, err = q.latestState(ctx, loginPolicyTable)
 	return factors, err
 }
 
-func (q *Queries) DefaultSecondFactors(ctx context.Context) (*SecondFactors, error) {
-	query, scan := prepareLoginPolicy2FAsQuery()
+func (q *Queries) DefaultMultiFactors(ctx context.Context) (factors *MultiFactors, err error) {
+	ctx, span := tracing.NewSpan(ctx)
+	defer func() { span.EndWithError(err) }()
+
+	query, scan := prepareLoginPolicyMFAsQuery(ctx, q.client)
 	stmt, args, err := query.Where(sq.Eq{
 		LoginPolicyColumnOrgID.identifier():      authz.GetInstance(ctx).InstanceID(),
 		LoginPolicyColumnInstanceID.identifier(): authz.GetInstance(ctx).InstanceID(),
 	}).OrderBy(LoginPolicyColumnIsDefault.identifier()).ToSql()
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "QUERY-CZ2Nv", "Errors.Query.SQLStatement")
+		return nil, zerrors.ThrowInternal(err, "QUERY-WxYjr", "Errors.Query.SQLStatement")
 	}
 
-	row := q.client.QueryRowContext(ctx, stmt, args...)
-	factors, err := scan(row)
+	err = q.client.QueryRowContext(ctx, func(row *sql.Row) error {
+		factors, err = scan(row)
+		return err
+	}, stmt, args...)
 	if err != nil {
 		return nil, err
 	}
-	factors.LatestSequence, err = q.latestSequence(ctx, loginPolicyTable)
+	factors.State, err = q.latestState(ctx, loginPolicyTable)
 	return factors, err
 }
 
-func (q *Queries) MultiFactorsByOrg(ctx context.Context, orgID string) (*MultiFactors, error) {
-	query, scan := prepareLoginPolicyMFAsQuery()
-	stmt, args, err := query.Where(
-		sq.And{
-			sq.Eq{
-				LoginPolicyColumnInstanceID.identifier(): authz.GetInstance(ctx).InstanceID(),
-			},
-			sq.Or{
-				sq.Eq{
-					LoginPolicyColumnOrgID.identifier(): orgID,
-				},
-				sq.Eq{
-					LoginPolicyColumnOrgID.identifier(): authz.GetInstance(ctx).InstanceID(),
-				},
-			},
-		}).
-		OrderBy(LoginPolicyColumnIsDefault.identifier()).
-		Limit(1).ToSql()
-	if err != nil {
-		return nil, errors.ThrowInternal(err, "QUERY-B4o7h", "Errors.Query.SQLStatement")
-	}
-
-	row := q.client.QueryRowContext(ctx, stmt, args...)
-	factors, err := scan(row)
-	if err != nil {
-		return nil, err
-	}
-	factors.LatestSequence, err = q.latestSequence(ctx, loginPolicyTable)
-	return factors, err
-}
-
-func (q *Queries) DefaultMultiFactors(ctx context.Context) (*MultiFactors, error) {
-	query, scan := prepareLoginPolicyMFAsQuery()
-	stmt, args, err := query.Where(sq.Eq{
-		LoginPolicyColumnOrgID.identifier():      authz.GetInstance(ctx).InstanceID(),
-		LoginPolicyColumnInstanceID.identifier(): authz.GetInstance(ctx).InstanceID(),
-	}).OrderBy(LoginPolicyColumnIsDefault.identifier()).ToSql()
-	if err != nil {
-		return nil, errors.ThrowInternal(err, "QUERY-WxYjr", "Errors.Query.SQLStatement")
-	}
-
-	row := q.client.QueryRowContext(ctx, stmt, args...)
-	factors, err := scan(row)
-	if err != nil {
-		return nil, err
-	}
-	factors.LatestSequence, err = q.latestSequence(ctx, loginPolicyTable)
-	return factors, err
-}
-
-func prepareLoginPolicyQuery() (sq.SelectBuilder, func(*sql.Rows) (*LoginPolicy, error)) {
+func prepareLoginPolicyQuery(ctx context.Context, db prepareDatabase) (sq.SelectBuilder, func(*sql.Rows) (*LoginPolicy, error)) {
 	return sq.Select(
 			LoginPolicyColumnOrgID.identifier(),
 			LoginPolicyColumnCreationDate.identifier(),
@@ -315,6 +368,7 @@ func prepareLoginPolicyQuery() (sq.SelectBuilder, func(*sql.Rows) (*LoginPolicy,
 			LoginPolicyColumnAllowUsernamePassword.identifier(),
 			LoginPolicyColumnAllowExternalIDPs.identifier(),
 			LoginPolicyColumnForceMFA.identifier(),
+			LoginPolicyColumnForceMFALocalOnly.identifier(),
 			LoginPolicyColumnSecondFactors.identifier(),
 			LoginPolicyColumnMultiFactors.identifier(),
 			LoginPolicyColumnPasswordlessType.identifier(),
@@ -329,24 +383,13 @@ func prepareLoginPolicyQuery() (sq.SelectBuilder, func(*sql.Rows) (*LoginPolicy,
 			LoginPolicyColumnExternalLoginCheckLifetime.identifier(),
 			LoginPolicyColumnMFAInitSkipLifetime.identifier(),
 			LoginPolicyColumnSecondFactorCheckLifetime.identifier(),
-			LoginPolicyColumnMultiFacotrCheckLifetime.identifier(),
-			IDPLoginPolicyLinkIDPIDCol.identifier(),
-			IDPNameCol.identifier(),
-			IDPTypeCol.identifier(),
-		).From(loginPolicyTable.identifier()).
-			LeftJoin(join(IDPLoginPolicyLinkAggregateIDCol, LoginPolicyColumnOrgID)).
-			LeftJoin(join(IDPIDCol, IDPLoginPolicyLinkIDPIDCol)).
+			LoginPolicyColumnMultiFactorCheckLifetime.identifier(),
+		).From(loginPolicyTable.identifier() + db.Timetravel(call.Took(ctx))).
 			PlaceholderFormat(sq.Dollar),
 		func(rows *sql.Rows) (*LoginPolicy, error) {
 			p := new(LoginPolicy)
 			defaultRedirectURI := sql.NullString{}
-			links := make([]*IDPLoginPolicyLink, 0)
 			for rows.Next() {
-				var (
-					idpID   = sql.NullString{}
-					idpName = sql.NullString{}
-					idpType = sql.NullInt16{}
-				)
 				err := rows.Scan(
 					&p.OrgID,
 					&p.CreationDate,
@@ -356,6 +399,7 @@ func prepareLoginPolicyQuery() (sq.SelectBuilder, func(*sql.Rows) (*LoginPolicy,
 					&p.AllowUsernamePassword,
 					&p.AllowExternalIDPs,
 					&p.ForceMFA,
+					&p.ForceMFALocalOnly,
 					&p.SecondFactors,
 					&p.MultiFactors,
 					&p.PasswordlessType,
@@ -371,50 +415,34 @@ func prepareLoginPolicyQuery() (sq.SelectBuilder, func(*sql.Rows) (*LoginPolicy,
 					&p.MFAInitSkipLifetime,
 					&p.SecondFactorCheckLifetime,
 					&p.MultiFactorCheckLifetime,
-					&idpID,
-					&idpName,
-					&idpType,
 				)
 				if err != nil {
-					return nil, errors.ThrowInternal(err, "QUERY-YcC53", "Errors.Internal")
-				}
-				var link IDPLoginPolicyLink
-				if idpID.Valid {
-					link = IDPLoginPolicyLink{IDPID: idpID.String}
-
-					link.IDPName = idpName.String
-					//IDPType 0 is oidc so we have to set unspecified manually
-					if idpType.Valid {
-						link.IDPType = domain.IDPConfigType(idpType.Int16)
-					} else {
-						link.IDPType = domain.IDPConfigTypeUnspecified
-					}
-					links = append(links, &link)
+					return nil, zerrors.ThrowInternal(err, "QUERY-YcC53", "Errors.Internal")
 				}
 			}
 			if p.OrgID == "" {
-				return nil, errors.ThrowNotFound(nil, "QUERY-QsUBJ", "Errors.LoginPolicy.NotFound")
+				return nil, zerrors.ThrowNotFound(nil, "QUERY-QsUBJ", "Errors.LoginPolicy.NotFound")
 			}
 			p.DefaultRedirectURI = defaultRedirectURI.String
-			p.IDPLinks = links
 			return p, nil
 		}
 }
 
-func prepareLoginPolicy2FAsQuery() (sq.SelectBuilder, func(*sql.Row) (*SecondFactors, error)) {
+func prepareLoginPolicy2FAsQuery(ctx context.Context, db prepareDatabase) (sq.SelectBuilder, func(*sql.Row) (*SecondFactors, error)) {
 	return sq.Select(
 			LoginPolicyColumnSecondFactors.identifier(),
-		).From(loginPolicyTable.identifier()).PlaceholderFormat(sq.Dollar),
+		).From(loginPolicyTable.identifier() + db.Timetravel(call.Took(ctx))).
+			PlaceholderFormat(sq.Dollar),
 		func(row *sql.Row) (*SecondFactors, error) {
 			p := new(SecondFactors)
 			err := row.Scan(
 				&p.Factors,
 			)
 			if err != nil {
-				if errs.Is(err, sql.ErrNoRows) {
-					return nil, errors.ThrowNotFound(err, "QUERY-yPqIZ", "Errors.LoginPolicy.NotFound")
+				if errors.Is(err, sql.ErrNoRows) {
+					return nil, zerrors.ThrowNotFound(err, "QUERY-yPqIZ", "Errors.LoginPolicy.NotFound")
 				}
-				return nil, errors.ThrowInternal(err, "QUERY-Mr6H3", "Errors.Internal")
+				return nil, zerrors.ThrowInternal(err, "QUERY-Mr6H3", "Errors.Internal")
 			}
 
 			p.Count = uint64(len(p.Factors))
@@ -422,20 +450,21 @@ func prepareLoginPolicy2FAsQuery() (sq.SelectBuilder, func(*sql.Row) (*SecondFac
 		}
 }
 
-func prepareLoginPolicyMFAsQuery() (sq.SelectBuilder, func(*sql.Row) (*MultiFactors, error)) {
+func prepareLoginPolicyMFAsQuery(ctx context.Context, db prepareDatabase) (sq.SelectBuilder, func(*sql.Row) (*MultiFactors, error)) {
 	return sq.Select(
 			LoginPolicyColumnMultiFactors.identifier(),
-		).From(loginPolicyTable.identifier()).PlaceholderFormat(sq.Dollar),
+		).From(loginPolicyTable.identifier() + db.Timetravel(call.Took(ctx))).
+			PlaceholderFormat(sq.Dollar),
 		func(row *sql.Row) (*MultiFactors, error) {
 			p := new(MultiFactors)
 			err := row.Scan(
 				&p.Factors,
 			)
 			if err != nil {
-				if errs.Is(err, sql.ErrNoRows) {
-					return nil, errors.ThrowNotFound(err, "QUERY-yPqIZ", "Errors.LoginPolicy.NotFound")
+				if errors.Is(err, sql.ErrNoRows) {
+					return nil, zerrors.ThrowNotFound(err, "QUERY-yPqIZ", "Errors.LoginPolicy.NotFound")
 				}
-				return nil, errors.ThrowInternal(err, "QUERY-Mr6H3", "Errors.Internal")
+				return nil, zerrors.ThrowInternal(err, "QUERY-Mr6H3", "Errors.Internal")
 			}
 
 			p.Count = uint64(len(p.Factors))

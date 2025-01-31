@@ -6,10 +6,11 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/zitadel/zitadel/internal/domain"
-
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/jinzhu/gorm"
+
+	db_mock "github.com/zitadel/zitadel/internal/database/mock"
+	"github.com/zitadel/zitadel/internal/domain"
 )
 
 var (
@@ -130,15 +131,15 @@ func (db *dbMock) close() {
 
 func mockDB(t *testing.T) *dbMock {
 	mockDB := dbMock{}
-	db, mock, err := sqlmock.New()
+	db, mock, err := sqlmock.New(sqlmock.ValueConverterOption(new(db_mock.TypeConverter)))
 	if err != nil {
-		t.Fatalf("error occured while creating stub db %v", err)
+		t.Fatalf("error occurred while creating stub db %v", err)
 	}
 
 	mockDB.mock = mock
 	mockDB.db, err = gorm.Open("postgres", db)
 	if err != nil {
-		t.Fatalf("error occured while connecting to stub db: %v", err)
+		t.Fatalf("error occurred while connecting to stub db: %v", err)
 	}
 
 	mockDB.mock.MatchExpectationsInOrder(true)
@@ -177,7 +178,7 @@ func (db *dbMock) expectGetByID(table, key, value string) *dbMock {
 	query := fmt.Sprintf(expectedGetByID, table, key)
 	db.mock.ExpectQuery(query).
 		WithArgs(value).
-		WillReturnRows(sqlmock.NewRows([]string{key}).
+		WillReturnRows(db.mock.NewRows([]string{key}).
 			AddRow(key))
 
 	return db
@@ -196,7 +197,7 @@ func (db *dbMock) expectGetByQuery(table, key, method, value string) *dbMock {
 	query := fmt.Sprintf(expectedGetByQuery, table, key, method)
 	db.mock.ExpectQuery(query).
 		WithArgs(value).
-		WillReturnRows(sqlmock.NewRows([]string{key}).
+		WillReturnRows(db.mock.NewRows([]string{key}).
 			AddRow(key))
 
 	return db
@@ -206,7 +207,7 @@ func (db *dbMock) expectGetByQueryCaseSensitive(table, key, method, value string
 	query := fmt.Sprintf(expectedGetByQueryCaseSensitive, table, key, method)
 	db.mock.ExpectQuery(query).
 		WithArgs(value).
-		WillReturnRows(sqlmock.NewRows([]string{key}).
+		WillReturnRows(db.mock.NewRows([]string{key}).
 			AddRow(key))
 
 	return db
@@ -249,15 +250,15 @@ func (db *dbMock) expectRemove(table, key, value string) *dbMock {
 }
 
 func (db *dbMock) expectRemoveKeys(table string, keys ...Key) *dbMock {
-	keynames := make([]interface{}, len(keys))
-	keyvalues := make([]driver.Value, len(keys))
+	keyNames := make([]interface{}, len(keys))
+	keyValues := make([]driver.Value, len(keys))
 	for i, key := range keys {
-		keynames[i] = key.Key.ToColumnName()
-		keyvalues[i] = key.Value
+		keyNames[i] = key.Key.ToColumnName()
+		keyValues[i] = key.Value
 	}
-	query := fmt.Sprintf(expectedRemoveByKeys(len(keys), table), keynames...)
+	query := fmt.Sprintf(expectedRemoveByKeys(len(keys), table), keyNames...)
 	db.mock.ExpectExec(query).
-		WithArgs(keyvalues...).
+		WithArgs(keyValues...).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	return db
@@ -308,15 +309,16 @@ func (db *dbMock) expectGetSearchRequestNoParams(table string, resultAmount, tot
 	query := fmt.Sprintf(expectedSearch, table)
 	queryCount := fmt.Sprintf(expectedSearchCount, table)
 
-	rows := sqlmock.NewRows([]string{"id"})
+	rows := db.mock.NewRows([]string{"id"})
 	for i := 0; i < resultAmount; i++ {
 		rows.AddRow(fmt.Sprintf("hodor-%d", i))
 	}
 
 	db.mock.ExpectQuery(queryCount).
-		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(total))
+		WillReturnRows(db.mock.NewRows([]string{"count"}).AddRow(total))
 	db.mock.ExpectQuery(query).
 		WillReturnRows(rows)
+
 	return db
 }
 
@@ -324,13 +326,13 @@ func (db *dbMock) expectGetSearchRequestWithLimit(table string, limit, resultAmo
 	query := fmt.Sprintf(expectedSearchLimit, table, limit)
 	queryCount := fmt.Sprintf(expectedSearchLimitCount, table)
 
-	rows := sqlmock.NewRows([]string{"id"})
+	rows := db.mock.NewRows([]string{"id"})
 	for i := 0; i < resultAmount; i++ {
 		rows.AddRow(fmt.Sprintf("hodor-%d", i))
 	}
 
 	db.mock.ExpectQuery(queryCount).
-		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(total))
+		WillReturnRows(db.mock.NewRows([]string{"count"}).AddRow(total))
 	db.mock.ExpectQuery(query).
 		WillReturnRows(rows)
 	return db
@@ -340,13 +342,13 @@ func (db *dbMock) expectGetSearchRequestWithOffset(table string, offset, resultA
 	query := fmt.Sprintf(expectedSearchOffset, table, offset)
 	queryCount := fmt.Sprintf(expectedSearchOffsetCount, table)
 
-	rows := sqlmock.NewRows([]string{"id"})
+	rows := db.mock.NewRows([]string{"id"})
 	for i := 0; i < resultAmount; i++ {
 		rows.AddRow(fmt.Sprintf("hodor-%d", i))
 	}
 
 	db.mock.ExpectQuery(queryCount).
-		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(total))
+		WillReturnRows(db.mock.NewRows([]string{"count"}).AddRow(total))
 	db.mock.ExpectQuery(query).
 		WillReturnRows(rows)
 	return db
@@ -356,13 +358,13 @@ func (db *dbMock) expectGetSearchRequestWithSorting(table, sorting string, sorti
 	query := fmt.Sprintf(expectedSearchSorting, table, sortingColumn.ToColumnName(), sorting)
 	queryCount := fmt.Sprintf(expectedSearchSortingCount, table)
 
-	rows := sqlmock.NewRows([]string{"id"})
+	rows := db.mock.NewRows([]string{"id"})
 	for i := 0; i < resultAmount; i++ {
 		rows.AddRow(fmt.Sprintf("hodor-%d", i))
 	}
 
 	db.mock.ExpectQuery(queryCount).
-		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(total))
+		WillReturnRows(db.mock.NewRows([]string{"count"}).AddRow(total))
 	db.mock.ExpectQuery(query).
 		WillReturnRows(rows)
 	return db
@@ -372,14 +374,14 @@ func (db *dbMock) expectGetSearchRequestWithSearchQuery(table, key, method, valu
 	query := fmt.Sprintf(expectedSearchQuery, table, key, method)
 	queryCount := fmt.Sprintf(expectedSearchQueryCount, table, key, method)
 
-	rows := sqlmock.NewRows([]string{"id"})
+	rows := db.mock.NewRows([]string{"id"})
 	for i := 0; i < resultAmount; i++ {
 		rows.AddRow(fmt.Sprintf("hodor-%d", i))
 	}
 
 	db.mock.ExpectQuery(queryCount).
 		WithArgs(value).
-		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(total))
+		WillReturnRows(db.mock.NewRows([]string{"count"}).AddRow(total))
 	db.mock.ExpectQuery(query).
 		WithArgs(value).
 		WillReturnRows(rows)
@@ -390,14 +392,14 @@ func (db *dbMock) expectGetSearchRequestWithAllParams(table, key, method, value,
 	query := fmt.Sprintf(expectedSearchQueryAllParams, table, key, method, sortingColumn.ToColumnName(), sorting, limit, offset)
 	queryCount := fmt.Sprintf(expectedSearchQueryAllParamCount, table, key, method)
 
-	rows := sqlmock.NewRows([]string{"id"})
+	rows := db.mock.NewRows([]string{"id"})
 	for i := 0; i < resultAmount; i++ {
 		rows.AddRow(fmt.Sprintf("hodor-%d", i))
 	}
 
 	db.mock.ExpectQuery(queryCount).
 		WithArgs(value).
-		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(total))
+		WillReturnRows(db.mock.NewRows([]string{"count"}).AddRow(total))
 	db.mock.ExpectQuery(query).
 		WithArgs(value).
 		WillReturnRows(rows)
@@ -408,13 +410,13 @@ func (db *dbMock) expectGetSearchRequestErr(table string, resultAmount, total in
 	query := fmt.Sprintf(expectedSearch, table)
 	queryCount := fmt.Sprintf(expectedSearchCount, table)
 
-	rows := sqlmock.NewRows([]string{"id"})
+	rows := db.mock.NewRows([]string{"id"})
 	for i := 0; i < resultAmount; i++ {
 		rows.AddRow(fmt.Sprintf("hodor-%d", i))
 	}
 
 	db.mock.ExpectQuery(queryCount).
-		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(total))
+		WillReturnRows(db.mock.NewRows([]string{"count"}).AddRow(total))
 	db.mock.ExpectQuery(query).
 		WillReturnError(err)
 	return db

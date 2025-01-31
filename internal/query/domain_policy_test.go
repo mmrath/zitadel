@@ -9,7 +9,34 @@ import (
 	"testing"
 
 	"github.com/zitadel/zitadel/internal/domain"
-	errs "github.com/zitadel/zitadel/internal/errors"
+	"github.com/zitadel/zitadel/internal/zerrors"
+)
+
+var (
+	prepareDomainPolicyStmt = `SELECT projections.domain_policies2.id,` +
+		` projections.domain_policies2.sequence,` +
+		` projections.domain_policies2.creation_date,` +
+		` projections.domain_policies2.change_date,` +
+		` projections.domain_policies2.resource_owner,` +
+		` projections.domain_policies2.user_login_must_be_domain,` +
+		` projections.domain_policies2.validate_org_domains,` +
+		` projections.domain_policies2.smtp_sender_address_matches_instance_domain,` +
+		` projections.domain_policies2.is_default,` +
+		` projections.domain_policies2.state` +
+		` FROM projections.domain_policies2` +
+		` AS OF SYSTEM TIME '-1 ms'`
+	prepareDomainPolicyCols = []string{
+		"id",
+		"sequence",
+		"creation_date",
+		"change_date",
+		"resource_owner",
+		"user_login_must_be_domain",
+		"validate_org_domains",
+		"smtp_sender_address_matches_instance_domain",
+		"is_default",
+		"state",
+	}
 )
 
 func Test_DomainPolicyPrepares(t *testing.T) {
@@ -27,23 +54,13 @@ func Test_DomainPolicyPrepares(t *testing.T) {
 			name:    "prepareDomainPolicyQuery no result",
 			prepare: prepareDomainPolicyQuery,
 			want: want{
-				sqlExpectations: mockQueries(
-					regexp.QuoteMeta(`SELECT projections.domain_policies.id,`+
-						` projections.domain_policies.sequence,`+
-						` projections.domain_policies.creation_date,`+
-						` projections.domain_policies.change_date,`+
-						` projections.domain_policies.resource_owner,`+
-						` projections.domain_policies.user_login_must_be_domain,`+
-						` projections.domain_policies.validate_org_domains,`+
-						` projections.domain_policies.smtp_sender_address_matches_instance_domain,`+
-						` projections.domain_policies.is_default,`+
-						` projections.domain_policies.state`+
-						` FROM projections.domain_policies`),
+				sqlExpectations: mockQueriesScanErr(
+					regexp.QuoteMeta(prepareDomainPolicyStmt),
 					nil,
 					nil,
 				),
 				err: func(err error) (error, bool) {
-					if !errs.IsNotFound(err) {
+					if !zerrors.IsNotFound(err) {
 						return fmt.Errorf("err should be zitadel.NotFoundError got: %w", err), false
 					}
 					return nil, true
@@ -56,29 +73,8 @@ func Test_DomainPolicyPrepares(t *testing.T) {
 			prepare: prepareDomainPolicyQuery,
 			want: want{
 				sqlExpectations: mockQuery(
-					regexp.QuoteMeta(`SELECT projections.domain_policies.id,`+
-						` projections.domain_policies.sequence,`+
-						` projections.domain_policies.creation_date,`+
-						` projections.domain_policies.change_date,`+
-						` projections.domain_policies.resource_owner,`+
-						` projections.domain_policies.user_login_must_be_domain,`+
-						` projections.domain_policies.validate_org_domains,`+
-						` projections.domain_policies.smtp_sender_address_matches_instance_domain,`+
-						` projections.domain_policies.is_default,`+
-						` projections.domain_policies.state`+
-						` FROM projections.domain_policies`),
-					[]string{
-						"id",
-						"sequence",
-						"creation_date",
-						"change_date",
-						"resource_owner",
-						"user_login_must_be_domain",
-						"validate_org_domains",
-						"smtp_sender_address_matches_instance_domain",
-						"is_default",
-						"state",
-					},
+					regexp.QuoteMeta(prepareDomainPolicyStmt),
+					prepareDomainPolicyCols,
 					[]driver.Value{
 						"pol-id",
 						uint64(20211109),
@@ -111,17 +107,7 @@ func Test_DomainPolicyPrepares(t *testing.T) {
 			prepare: prepareDomainPolicyQuery,
 			want: want{
 				sqlExpectations: mockQueryErr(
-					regexp.QuoteMeta(`SELECT projections.domain_policies.id,`+
-						` projections.domain_policies.sequence,`+
-						` projections.domain_policies.creation_date,`+
-						` projections.domain_policies.change_date,`+
-						` projections.domain_policies.resource_owner,`+
-						` projections.domain_policies.user_login_must_be_domain,`+
-						` projections.domain_policies.validate_org_domains,`+
-						` projections.domain_policies.smtp_sender_address_matches_instance_domain,`+
-						` projections.domain_policies.is_default,`+
-						` projections.domain_policies.state`+
-						` FROM projections.domain_policies`),
+					regexp.QuoteMeta(prepareDomainPolicyStmt),
 					sql.ErrConnDone,
 				),
 				err: func(err error) (error, bool) {
@@ -131,12 +117,12 @@ func Test_DomainPolicyPrepares(t *testing.T) {
 					return nil, true
 				},
 			},
-			object: nil,
+			object: (*DomainPolicy)(nil),
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assertPrepare(t, tt.prepare, tt.object, tt.want.sqlExpectations, tt.want.err)
+			assertPrepare(t, tt.prepare, tt.object, tt.want.sqlExpectations, tt.want.err, defaultPrepareArgs...)
 		})
 	}
 }

@@ -4,9 +4,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/zitadel/zitadel/internal/eventstore"
-
 	"github.com/zitadel/zitadel/internal/domain"
+	"github.com/zitadel/zitadel/internal/eventstore"
 	"github.com/zitadel/zitadel/internal/repository/org"
 	"github.com/zitadel/zitadel/internal/repository/policy"
 )
@@ -67,6 +66,7 @@ func (wm *OrgLoginPolicyWriteModel) NewChangedEvent(
 	allowRegister,
 	allowExternalIDP,
 	forceMFA,
+	forceMFALocalOnly,
 	hidePasswordReset,
 	ignoreUnknownUsernames,
 	allowDomainDiscovery,
@@ -93,6 +93,9 @@ func (wm *OrgLoginPolicyWriteModel) NewChangedEvent(
 	}
 	if wm.ForceMFA != forceMFA {
 		changes = append(changes, policy.ChangeForceMFA(forceMFA))
+	}
+	if wm.ForceMFALocalOnly != forceMFALocalOnly {
+		changes = append(changes, policy.ChangeForceMFALocalOnly(forceMFALocalOnly))
 	}
 	if wm.HidePasswordReset != hidePasswordReset {
 		changes = append(changes, policy.ChangeHidePasswordReset(hidePasswordReset))

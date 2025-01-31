@@ -4,10 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	errs "errors"
+	"errors"
 	"fmt"
 	"io/ioutil"
-	"net/http"
 	"os"
 	"time"
 
@@ -16,10 +15,12 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"github.com/zitadel/zitadel/internal/api/authz"
-
+	"github.com/zitadel/zitadel/internal/api/call"
 	"github.com/zitadel/zitadel/internal/domain"
-	"github.com/zitadel/zitadel/internal/errors"
+	"github.com/zitadel/zitadel/internal/i18n"
 	"github.com/zitadel/zitadel/internal/query/projection"
+	"github.com/zitadel/zitadel/internal/telemetry/tracing"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 type MessageTexts struct {
@@ -27,8 +28,12 @@ type MessageTexts struct {
 	PasswordReset            MessageText
 	VerifyEmail              MessageText
 	VerifyPhone              MessageText
+	VerifySMSOTP             MessageText
+	VerifyEmailOTP           MessageText
 	DomainClaimed            MessageText
 	PasswordlessRegistration MessageText
+	PasswordChange           MessageText
+	InviteUser               MessageText
 }
 
 type MessageText struct {
@@ -116,69 +121,91 @@ var (
 		name:  projection.MessageTextFooterCol,
 		table: messageTextTable,
 	}
+	MessageTextColOwnerRemoved = Column{
+		name:  projection.MessageTextOwnerRemovedCol,
+		table: messageTextTable,
+	}
 )
 
-func (q *Queries) DefaultMessageText(ctx context.Context) (*MessageText, error) {
-	stmt, scan := prepareMessageTextQuery()
+func (q *Queries) DefaultMessageText(ctx context.Context) (text *MessageText, err error) {
+	ctx, span := tracing.NewSpan(ctx)
+	defer func() { span.EndWithError(err) }()
+
+	stmt, scan := prepareMessageTextQuery(ctx, q.client)
 	query, args, err := stmt.Where(sq.Eq{
 		MessageTextColAggregateID.identifier(): authz.GetInstance(ctx).InstanceID(),
 		MessageTextColInstanceID.identifier():  authz.GetInstance(ctx).InstanceID(),
 	}).
 		Limit(1).ToSql()
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "QUERY-1b9mf", "Errors.Query.SQLStatement")
+		return nil, zerrors.ThrowInternal(err, "QUERY-1b9mf", "Errors.Query.SQLStatement")
 	}
 
-	row := q.client.QueryRowContext(ctx, query, args...)
-	return scan(row)
+	err = q.client.QueryRowContext(ctx, func(row *sql.Row) error {
+		text, err = scan(row)
+		return err
+	}, query, args...)
+	return text, err
 }
 
-func (q *Queries) DefaultMessageTextByTypeAndLanguageFromFileSystem(ctx context.Context, messageType, language string) (*MessageText, error) {
+func (q *Queries) DefaultMessageTextByTypeAndLanguageFromFileSystem(ctx context.Context, messageType, language string) (_ *MessageText, err error) {
+	ctx, span := tracing.NewSpan(ctx)
+	defer func() { span.EndWithError(err) }()
+
 	contents, err := q.readNotificationTextMessages(ctx, language)
 	if err != nil {
 		return nil, err
 	}
 	messageTexts := new(MessageTexts)
 	if err := yaml.Unmarshal(contents, messageTexts); err != nil {
-		return nil, errors.ThrowInternal(err, "TEXT-3N9fs", "Errors.TranslationFile.ReadError")
+		return nil, zerrors.ThrowInternal(err, "TEXT-3N9fs", "Errors.TranslationFile.ReadError")
 	}
 	return messageTexts.GetMessageTextByType(messageType), nil
 }
 
-func (q *Queries) CustomMessageTextByTypeAndLanguage(ctx context.Context, aggregateID, messageType, language string) (*MessageText, error) {
-	stmt, scan := prepareMessageTextQuery()
-	query, args, err := stmt.Where(
-		sq.Eq{
-			MessageTextColLanguage.identifier():    language,
-			MessageTextColType.identifier():        messageType,
-			MessageTextColAggregateID.identifier(): aggregateID,
-			MessageTextColInstanceID.identifier():  authz.GetInstance(ctx).InstanceID(),
-		},
-	).
-		OrderBy(MessageTextColAggregateID.identifier()).
-		Limit(1).ToSql()
-	if err != nil {
-		return nil, errors.ThrowInternal(err, "QUERY-1b9mf", "Errors.Query.SQLStatement")
+func (q *Queries) CustomMessageTextByTypeAndLanguage(ctx context.Context, aggregateID, messageType, language string, withOwnerRemoved bool) (msg *MessageText, err error) {
+	ctx, span := tracing.NewSpan(ctx)
+	defer func() { span.EndWithError(err) }()
+
+	stmt, scan := prepareMessageTextQuery(ctx, q.client)
+	eq := sq.Eq{
+		MessageTextColLanguage.identifier():    language,
+		MessageTextColType.identifier():        messageType,
+		MessageTextColAggregateID.identifier(): aggregateID,
+		MessageTextColInstanceID.identifier():  authz.GetInstance(ctx).InstanceID(),
+	}
+	if !withOwnerRemoved {
+		eq[MessageTextColOwnerRemoved.identifier()] = false
 	}
 
-	row := q.client.QueryRowContext(ctx, query, args...)
-	msg, err := scan(row)
-	if errors.IsNotFound(err) {
+	query, args, err := stmt.Where(eq).OrderBy(MessageTextColAggregateID.identifier()).Limit(1).ToSql()
+	if err != nil {
+		return nil, zerrors.ThrowInternal(err, "QUERY-1b9mf", "Errors.Query.SQLStatement")
+	}
+
+	err = q.client.QueryRowContext(ctx, func(row *sql.Row) error {
+		msg, err = scan(row)
+		return err
+	}, query, args...)
+	if zerrors.IsNotFound(err) {
 		return q.IAMMessageTextByTypeAndLanguage(ctx, messageType, language)
 	}
 	return msg, err
 }
 
-func (q *Queries) IAMMessageTextByTypeAndLanguage(ctx context.Context, messageType, language string) (*MessageText, error) {
+func (q *Queries) IAMMessageTextByTypeAndLanguage(ctx context.Context, messageType, language string) (_ *MessageText, err error) {
+	ctx, span := tracing.NewSpan(ctx)
+	defer func() { span.EndWithError(err) }()
+
 	contents, err := q.readNotificationTextMessages(ctx, language)
 	if err != nil {
 		return nil, err
 	}
 	notificationTextMap := make(map[string]interface{})
 	if err := yaml.Unmarshal(contents, &notificationTextMap); err != nil {
-		return nil, errors.ThrowInternal(err, "QUERY-ekjFF", "Errors.TranslationFile.ReadError")
+		return nil, zerrors.ThrowInternal(err, "QUERY-ekjFF", "Errors.TranslationFile.ReadError")
 	}
-	texts, err := q.CustomTextList(ctx, authz.GetInstance(ctx).InstanceID(), messageType, language)
+	texts, err := q.CustomTextList(ctx, authz.GetInstance(ctx).InstanceID(), messageType, language, false)
 	if err != nil {
 		return nil, err
 	}
@@ -192,11 +219,11 @@ func (q *Queries) IAMMessageTextByTypeAndLanguage(ctx context.Context, messageTy
 	jsonbody, err := json.Marshal(notificationTextMap)
 
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "QUERY-3m8fJ", "Errors.TranslationFile.MergeError")
+		return nil, zerrors.ThrowInternal(err, "QUERY-3m8fJ", "Errors.TranslationFile.MergeError")
 	}
 	notificationText := new(MessageTexts)
 	if err := json.Unmarshal(jsonbody, &notificationText); err != nil {
-		return nil, errors.ThrowInternal(err, "QUERY-9MkfD", "Errors.TranslationFile.MergeError")
+		return nil, zerrors.ThrowInternal(err, "QUERY-9MkfD", "Errors.TranslationFile.MergeError")
 	}
 	result := notificationText.GetMessageTextByType(messageType)
 	result.IsDefault = true
@@ -210,9 +237,9 @@ func (q *Queries) readNotificationTextMessages(ctx context.Context, language str
 	var err error
 	contents, ok := q.NotificationTranslationFileContents[language]
 	if !ok {
-		contents, err = q.readTranslationFile(q.NotificationDir, fmt.Sprintf("/i18n/%s.yaml", language))
-		if errors.IsNotFound(err) {
-			contents, err = q.readTranslationFile(q.NotificationDir, fmt.Sprintf("/i18n/%s.yaml", authz.GetInstance(ctx).DefaultLanguage().String()))
+		contents, err = q.readTranslationFile(i18n.NOTIFICATION, fmt.Sprintf("/i18n/%s.yaml", language))
+		if zerrors.IsNotFound(err) {
+			contents, err = q.readTranslationFile(i18n.NOTIFICATION, fmt.Sprintf("/i18n/%s.yaml", authz.GetInstance(ctx).DefaultLanguage().String()))
 		}
 		if err != nil {
 			return nil, err
@@ -222,7 +249,7 @@ func (q *Queries) readNotificationTextMessages(ctx context.Context, language str
 	return contents, nil
 }
 
-func prepareMessageTextQuery() (sq.SelectBuilder, func(*sql.Row) (*MessageText, error)) {
+func prepareMessageTextQuery(ctx context.Context, db prepareDatabase) (sq.SelectBuilder, func(*sql.Row) (*MessageText, error)) {
 	return sq.Select(
 			MessageTextColAggregateID.identifier(),
 			MessageTextColSequence.identifier(),
@@ -239,7 +266,8 @@ func prepareMessageTextQuery() (sq.SelectBuilder, func(*sql.Row) (*MessageText, 
 			MessageTextColButtonText.identifier(),
 			MessageTextColFooter.identifier(),
 		).
-			From(messageTextTable.identifier()).PlaceholderFormat(sq.Dollar),
+			From(messageTextTable.identifier() + db.Timetravel(call.Took(ctx))).
+			PlaceholderFormat(sq.Dollar),
 		func(row *sql.Row) (*MessageText, error) {
 			msg := new(MessageText)
 			lang := ""
@@ -267,10 +295,10 @@ func prepareMessageTextQuery() (sq.SelectBuilder, func(*sql.Row) (*MessageText, 
 				&footer,
 			)
 			if err != nil {
-				if errs.Is(err, sql.ErrNoRows) {
-					return nil, errors.ThrowNotFound(err, "QUERY-3nlrS", "Errors.MessageText.NotFound")
+				if errors.Is(err, sql.ErrNoRows) {
+					return nil, zerrors.ThrowNotFound(err, "QUERY-3nlrS", "Errors.MessageText.NotFound")
 				}
-				return nil, errors.ThrowInternal(err, "QUERY-499gJ", "Errors.Internal")
+				return nil, zerrors.ThrowInternal(err, "QUERY-499gJ", "Errors.Internal")
 			}
 			msg.Language = language.Make(lang)
 			msg.Title = title.String
@@ -284,17 +312,17 @@ func prepareMessageTextQuery() (sq.SelectBuilder, func(*sql.Row) (*MessageText, 
 		}
 }
 
-func (q *Queries) readTranslationFile(dir http.FileSystem, filename string) ([]byte, error) {
-	r, err := dir.Open(filename)
+func (q *Queries) readTranslationFile(namespace i18n.Namespace, filename string) ([]byte, error) {
+	r, err := i18n.LoadFilesystem(namespace).Open(filename)
 	if os.IsNotExist(err) {
-		return nil, errors.ThrowNotFound(err, "QUERY-sN9wg", "Errors.TranslationFile.NotFound")
+		return nil, zerrors.ThrowNotFound(err, "QUERY-sN9wg", "Errors.TranslationFile.NotFound")
 	}
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "QUERY-93njw", "Errors.TranslationFile.ReadError")
+		return nil, zerrors.ThrowInternal(err, "QUERY-93njw", "Errors.TranslationFile.ReadError")
 	}
 	contents, err := ioutil.ReadAll(r)
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "QUERY-l0fse", "Errors.TranslationFile.ReadError")
+		return nil, zerrors.ThrowInternal(err, "QUERY-l0fse", "Errors.TranslationFile.ReadError")
 	}
 	return contents, nil
 }
@@ -309,10 +337,18 @@ func (m *MessageTexts) GetMessageTextByType(msgType string) *MessageText {
 		return &m.VerifyEmail
 	case domain.VerifyPhoneMessageType:
 		return &m.VerifyPhone
+	case domain.VerifySMSOTPMessageType:
+		return &m.VerifySMSOTP
+	case domain.VerifyEmailOTPMessageType:
+		return &m.VerifyEmailOTP
 	case domain.DomainClaimedMessageType:
 		return &m.DomainClaimed
 	case domain.PasswordlessRegistrationMessageType:
 		return &m.PasswordlessRegistration
+	case domain.PasswordChangeMessageType:
+		return &m.PasswordChange
+	case domain.InviteUserMessageType:
+		return &m.InviteUser
 	}
 	return nil
 }

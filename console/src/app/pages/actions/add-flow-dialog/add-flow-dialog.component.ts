@@ -1,6 +1,7 @@
 import { Component, Inject } from '@angular/core';
-import { UntypedFormBuilder, UntypedFormGroup, Validators } from '@angular/forms';
-import { MAT_DIALOG_DATA, MatDialogRef } from '@angular/material/dialog';
+import { UntypedFormBuilder, UntypedFormGroup } from '@angular/forms';
+import { MatDialogRef, MAT_DIALOG_DATA } from '@angular/material/dialog';
+import { requiredValidator } from 'src/app/modules/form-field/validators/validators';
 import { Action, FlowType, TriggerType } from 'src/app/proto/generated/zitadel/action_pb';
 import { SetTriggerActionsRequest } from 'src/app/proto/generated/zitadel/management_pb';
 import { ManagementService } from 'src/app/services/mgmt.service';
@@ -31,8 +32,8 @@ export class AddFlowDialogComponent {
     }
 
     this.form = this.fb.group({
-      triggerType: [data.triggerType ? data.triggerType : '', [Validators.required]],
-      actionIdsList: [data.actions ? (data.actions as Action.AsObject[]).map((a) => a.id) : [], [Validators.required]],
+      triggerType: [data.triggerType ? data.triggerType : '', [requiredValidator]],
+      actionIdsList: [data.actions ? (data.actions as Action.AsObject[]).map((a) => a.id) : [], [requiredValidator]],
     });
 
     this.getActionIds();

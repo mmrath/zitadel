@@ -11,7 +11,7 @@ import (
 )
 
 func (s *Server) GetUserGrantByID(ctx context.Context, req *mgmt_pb.GetUserGrantByIDRequest) (*mgmt_pb.GetUserGrantByIDResponse, error) {
-	idQuery, err := query.NewUserGrantGrantIDSearchQuery(req.GrantId)
+	idQuery, err := query.NewUserGrantIDSearchQuery(req.GrantId)
 	if err != nil {
 		return nil, err
 	}
@@ -33,13 +33,13 @@ func (s *Server) ListUserGrants(ctx context.Context, req *mgmt_pb.ListUserGrantR
 	if err != nil {
 		return nil, err
 	}
-	res, err := s.query.UserGrants(ctx, queries)
+	res, err := s.query.UserGrants(ctx, queries, false)
 	if err != nil {
 		return nil, err
 	}
 	return &mgmt_pb.ListUserGrantResponse{
 		Result:  user.UserGrantsToPb(s.assetAPIPrefix(ctx), res.UserGrants),
-		Details: obj_grpc.ToListDetails(res.Count, res.Sequence, res.Timestamp),
+		Details: obj_grpc.ToListDetails(res.Count, res.Sequence, res.LastRun),
 	}, nil
 }
 

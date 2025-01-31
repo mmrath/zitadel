@@ -4,8 +4,9 @@ import (
 	"context"
 
 	"github.com/zitadel/zitadel/internal/domain"
-	caos_errs "github.com/zitadel/zitadel/internal/errors"
 	"github.com/zitadel/zitadel/internal/repository/org"
+	"github.com/zitadel/zitadel/internal/telemetry/tracing"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 func (c *Commands) getOrgPrivacyPolicy(ctx context.Context, orgID string) (*domain.PrivacyPolicy, error) {
@@ -28,17 +29,27 @@ func (c *Commands) orgPrivacyPolicyWriteModelByID(ctx context.Context, orgID str
 	return policy, nil
 }
 
-func (c *Commands) AddPrivacyPolicy(ctx context.Context, resourceOwner string, policy *domain.PrivacyPolicy) (*domain.PrivacyPolicy, error) {
+func (c *Commands) AddPrivacyPolicy(ctx context.Context, resourceOwner string, policy *domain.PrivacyPolicy) (_ *domain.PrivacyPolicy, err error) {
+	ctx, span := tracing.NewSpan(ctx)
+	defer func() { span.EndWithError(err) }()
+
+	if policy.SupportEmail != "" {
+		if err := policy.SupportEmail.Validate(); err != nil {
+			return nil, err
+		}
+		policy.SupportEmail = policy.SupportEmail.Normalize()
+	}
+
 	if resourceOwner == "" {
-		return nil, caos_errs.ThrowInvalidArgument(nil, "Org-MMk9fs", "Errors.ResourceOwnerMissing")
+		return nil, zerrors.ThrowInvalidArgument(nil, "Org-MMk9fs", "Errors.ResourceOwnerMissing")
 	}
 	addedPolicy := NewOrgPrivacyPolicyWriteModel(resourceOwner)
-	err := c.eventstore.FilterToQueryReducer(ctx, addedPolicy)
+	err = c.eventstore.FilterToQueryReducer(ctx, addedPolicy)
 	if err != nil {
 		return nil, err
 	}
 	if addedPolicy.State == domain.PolicyStateActive {
-		return nil, caos_errs.ThrowAlreadyExists(nil, "Org-0oLpd", "Errors.Org.PrivacyPolicy.AlreadyExists")
+		return nil, zerrors.ThrowAlreadyExists(nil, "Org-0oLpd", "Errors.Org.PrivacyPolicy.AlreadyExists")
 	}
 
 	orgAgg := OrgAggregateFromWriteModel(&addedPolicy.WriteModel)
@@ -49,7 +60,11 @@ func (c *Commands) AddPrivacyPolicy(ctx context.Context, resourceOwner string, p
 			orgAgg,
 			policy.TOSLink,
 			policy.PrivacyLink,
-			policy.HelpLink))
+			policy.HelpLink,
+			policy.SupportEmail,
+			policy.DocsLink,
+			policy.CustomLink,
+			policy.CustomLinkText))
 	if err != nil {
 		return nil, err
 	}
@@ -61,23 +76,30 @@ func (c *Commands) AddPrivacyPolicy(ctx context.Context, resourceOwner string, p
 }
 
 func (c *Commands) ChangePrivacyPolicy(ctx context.Context, resourceOwner string, policy *domain.PrivacyPolicy) (*domain.PrivacyPolicy, error) {
-	if resourceOwner == "" {
-		return nil, caos_errs.ThrowInvalidArgument(nil, "Org-22N89f", "Errors.ResourceOwnerMissing")
+
+	if policy.SupportEmail != "" {
+		if err := policy.SupportEmail.Validate(); err != nil {
+			return nil, err
+		}
+		policy.SupportEmail = policy.SupportEmail.Normalize()
 	}
 
-	existingPolicy := NewOrgPrivacyPolicyWriteModel(resourceOwner)
-	err := c.eventstore.FilterToQueryReducer(ctx, existingPolicy)
+	if resourceOwner == "" {
+		return nil, zerrors.ThrowInvalidArgument(nil, "Org-22N89f", "Errors.ResourceOwnerMissing")
+	}
+
+	existingPolicy, err := c.orgPrivacyPolicyWriteModelByID(ctx, resourceOwner)
 	if err != nil {
 		return nil, err
 	}
 	if existingPolicy.State == domain.PolicyStateUnspecified || existingPolicy.State == domain.PolicyStateRemoved {
-		return nil, caos_errs.ThrowNotFound(nil, "ORG-Ng8sf", "Errors.Org.PrivacyPolicy.NotFound")
+		return nil, zerrors.ThrowNotFound(nil, "ORG-Ng8sf", "Errors.Org.PrivacyPolicy.NotFound")
 	}
 
 	orgAgg := OrgAggregateFromWriteModel(&existingPolicy.PrivacyPolicyWriteModel.WriteModel)
-	changedEvent, hasChanged := existingPolicy.NewChangedEvent(ctx, orgAgg, policy.TOSLink, policy.PrivacyLink, policy.HelpLink)
+	changedEvent, hasChanged := existingPolicy.NewChangedEvent(ctx, orgAgg, policy.TOSLink, policy.PrivacyLink, policy.HelpLink, policy.SupportEmail, policy.DocsLink, policy.CustomLink, policy.CustomLinkText)
 	if !hasChanged {
-		return nil, caos_errs.ThrowPreconditionFailed(nil, "Org-4N9fs", "Errors.Org.PrivacyPolicy.NotChanged")
+		return nil, zerrors.ThrowPreconditionFailed(nil, "Org-4N9fs", "Errors.Org.PrivacyPolicy.NotChanged")
 	}
 
 	pushedEvents, err := c.eventstore.Push(ctx, changedEvent)
@@ -93,7 +115,7 @@ func (c *Commands) ChangePrivacyPolicy(ctx context.Context, resourceOwner string
 
 func (c *Commands) RemovePrivacyPolicy(ctx context.Context, orgID string) (*domain.ObjectDetails, error) {
 	if orgID == "" {
-		return nil, caos_errs.ThrowInvalidArgument(nil, "Org-Nf9sf", "Errors.ResourceOwnerMissing")
+		return nil, zerrors.ThrowInvalidArgument(nil, "Org-Nf9sf", "Errors.ResourceOwnerMissing")
 	}
 	existingPolicy := NewOrgPrivacyPolicyWriteModel(orgID)
 	event, err := c.removePrivacyPolicy(ctx, existingPolicy)
@@ -117,7 +139,7 @@ func (c *Commands) removePrivacyPolicy(ctx context.Context, existingPolicy *OrgP
 		return nil, err
 	}
 	if existingPolicy.State == domain.PolicyStateUnspecified || existingPolicy.State == domain.PolicyStateRemoved {
-		return nil, caos_errs.ThrowNotFound(nil, "ORG-Ze9gs", "Errors.Org.PrivacyPolicy.NotFound")
+		return nil, zerrors.ThrowNotFound(nil, "ORG-Ze9gs", "Errors.Org.PrivacyPolicy.NotFound")
 	}
 	orgAgg := OrgAggregateFromWriteModel(&existingPolicy.WriteModel)
 	return org.NewPrivacyPolicyRemovedEvent(ctx, orgAgg), nil

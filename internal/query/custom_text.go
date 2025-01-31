@@ -13,11 +13,13 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"github.com/zitadel/zitadel/internal/api/authz"
-
+	"github.com/zitadel/zitadel/internal/api/call"
 	"github.com/zitadel/zitadel/internal/domain"
-	"github.com/zitadel/zitadel/internal/errors"
 	"github.com/zitadel/zitadel/internal/eventstore/v1/models"
+	"github.com/zitadel/zitadel/internal/i18n"
 	"github.com/zitadel/zitadel/internal/query/projection"
+	"github.com/zitadel/zitadel/internal/telemetry/tracing"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 type CustomTexts struct {
@@ -78,91 +80,114 @@ var (
 		name:  projection.CustomTextTextCol,
 		table: customTextTable,
 	}
+	CustomTextOwnerRemoved = Column{
+		name:  projection.CustomTextOwnerRemovedCol,
+		table: customTextTable,
+	}
 )
 
-func (q *Queries) CustomTextList(ctx context.Context, aggregateID, template, language string) (texts *CustomTexts, err error) {
-	stmt, scan := prepareCustomTextsQuery()
-	query, args, err := stmt.Where(
-		sq.Eq{
-			CustomTextColAggregateID.identifier(): aggregateID,
-			CustomTextColTemplate.identifier():    template,
-			CustomTextColLanguage.identifier():    language,
-			CustomTextColInstanceID.identifier():  authz.GetInstance(ctx).InstanceID(),
-		},
-	).ToSql()
+func (q *Queries) CustomTextList(ctx context.Context, aggregateID, template, language string, withOwnerRemoved bool) (texts *CustomTexts, err error) {
+	ctx, span := tracing.NewSpan(ctx)
+	defer func() { span.EndWithError(err) }()
+
+	stmt, scan := prepareCustomTextsQuery(ctx, q.client)
+	eq := sq.Eq{
+		CustomTextColAggregateID.identifier(): aggregateID,
+		CustomTextColTemplate.identifier():    template,
+		CustomTextColLanguage.identifier():    language,
+		CustomTextColInstanceID.identifier():  authz.GetInstance(ctx).InstanceID(),
+	}
+	if !withOwnerRemoved {
+		eq[CustomTextOwnerRemoved.identifier()] = false
+	}
+	query, args, err := stmt.Where(eq).ToSql()
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "QUERY-M9gse", "Errors.Query.SQLStatement")
+		return nil, zerrors.ThrowInternal(err, "QUERY-M9gse", "Errors.Query.SQLStatement")
 	}
 
-	rows, err := q.client.QueryContext(ctx, query, args...)
+	err = q.client.QueryContext(ctx, func(rows *sql.Rows) error {
+		texts, err = scan(rows)
+		return err
+	}, query, args...)
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "QUERY-2j00f", "Errors.Internal")
+		return nil, zerrors.ThrowInternal(err, "QUERY-2j00f", "Errors.Internal")
 	}
-	texts, err = scan(rows)
-	if err != nil {
-		return nil, err
-	}
-	texts.LatestSequence, err = q.latestSequence(ctx, projectsTable)
+
+	texts.State, err = q.latestState(ctx, projectsTable)
 	return texts, err
 }
 
-func (q *Queries) CustomTextListByTemplate(ctx context.Context, aggregateID, template string) (texts *CustomTexts, err error) {
-	stmt, scan := prepareCustomTextsQuery()
-	query, args, err := stmt.Where(
-		sq.Eq{
-			CustomTextColAggregateID.identifier(): aggregateID,
-			CustomTextColTemplate.identifier():    template,
-			CustomTextColInstanceID.identifier():  authz.GetInstance(ctx).InstanceID(),
-		},
-	).ToSql()
+func (q *Queries) CustomTextListByTemplate(ctx context.Context, aggregateID, template string, withOwnerRemoved bool) (texts *CustomTexts, err error) {
+	ctx, span := tracing.NewSpan(ctx)
+	defer func() { span.EndWithError(err) }()
+
+	stmt, scan := prepareCustomTextsQuery(ctx, q.client)
+	eq := sq.Eq{
+		CustomTextColAggregateID.identifier(): aggregateID,
+		CustomTextColTemplate.identifier():    template,
+		CustomTextColInstanceID.identifier():  authz.GetInstance(ctx).InstanceID(),
+	}
+	if !withOwnerRemoved {
+		eq[CustomTextOwnerRemoved.identifier()] = false
+	}
+	query, args, err := stmt.Where(eq).ToSql()
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "QUERY-M49fs", "Errors.Query.SQLStatement")
+		return nil, zerrors.ThrowInternal(err, "QUERY-M49fs", "Errors.Query.SQLStatement")
 	}
 
-	rows, err := q.client.QueryContext(ctx, query, args...)
+	err = q.client.QueryContext(ctx, func(rows *sql.Rows) error {
+		texts, err = scan(rows)
+		return err
+	}, query, args...)
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "QUERY-3n9ge", "Errors.Internal")
+		return nil, zerrors.ThrowInternal(err, "QUERY-3n9ge", "Errors.Internal")
 	}
-	texts, err = scan(rows)
-	if err != nil {
-		return nil, err
-	}
-	texts.LatestSequence, err = q.latestSequence(ctx, projectsTable)
+
+	texts.State, err = q.latestState(ctx, projectsTable)
 	return texts, err
 }
 
-func (q *Queries) GetDefaultLoginTexts(ctx context.Context, lang string) (*domain.CustomLoginText, error) {
+func (q *Queries) GetDefaultLoginTexts(ctx context.Context, lang string) (_ *domain.CustomLoginText, err error) {
+	ctx, span := tracing.NewSpan(ctx)
+	defer func() { span.EndWithError(err) }()
+
 	contents, err := q.readLoginTranslationFile(ctx, lang)
 	if err != nil {
 		return nil, err
 	}
 	loginText := new(domain.CustomLoginText)
 	if err := yaml.Unmarshal(contents, loginText); err != nil {
-		return nil, errors.ThrowInternal(err, "TEXT-M0p4s", "Errors.TranslationFile.ReadError")
+		return nil, zerrors.ThrowInternal(err, "TEXT-M0p4s", "Errors.TranslationFile.ReadError")
 	}
 	loginText.IsDefault = true
 	loginText.AggregateID = authz.GetInstance(ctx).InstanceID()
 	return loginText, nil
 }
 
-func (q *Queries) GetCustomLoginTexts(ctx context.Context, aggregateID, lang string) (*domain.CustomLoginText, error) {
-	texts, err := q.CustomTextList(ctx, aggregateID, domain.LoginCustomText, lang)
+func (q *Queries) GetCustomLoginTexts(ctx context.Context, aggregateID, lang string) (_ *domain.CustomLoginText, err error) {
+	ctx, span := tracing.NewSpan(ctx)
+	defer func() { span.EndWithError(err) }()
+
+	texts, err := q.CustomTextList(ctx, aggregateID, domain.LoginCustomText, lang, false)
 	if err != nil {
 		return nil, err
 	}
 	return CustomTextsToLoginDomain(authz.GetInstance(ctx).InstanceID(), aggregateID, lang, texts), err
 }
 
-func (q *Queries) IAMLoginTexts(ctx context.Context, lang string) (*domain.CustomLoginText, error) {
+func (q *Queries) IAMLoginTexts(ctx context.Context, lang string) (_ *domain.CustomLoginText, err error) {
+	ctx, span := tracing.NewSpan(ctx)
+	defer func() { span.EndWithError(err) }()
+
 	contents, err := q.readLoginTranslationFile(ctx, lang)
 	if err != nil {
 		return nil, err
 	}
 	loginTextMap := make(map[string]interface{})
 	if err := yaml.Unmarshal(contents, &loginTextMap); err != nil {
-		return nil, errors.ThrowInternal(err, "QUERY-m0Jf3", "Errors.TranslationFile.ReadError")
+		return nil, zerrors.ThrowInternal(err, "QUERY-m0Jf3", "Errors.TranslationFile.ReadError")
 	}
-	texts, err := q.CustomTextList(ctx, authz.GetInstance(ctx).InstanceID(), domain.LoginCustomText, lang)
+	texts, err := q.CustomTextList(ctx, authz.GetInstance(ctx).InstanceID(), domain.LoginCustomText, lang, false)
 	if err != nil {
 		return nil, err
 	}
@@ -176,11 +201,11 @@ func (q *Queries) IAMLoginTexts(ctx context.Context, lang string) (*domain.Custo
 	}
 	jsonbody, err := json.Marshal(loginTextMap)
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "QUERY-0nJ3f", "Errors.TranslationFile.MergeError")
+		return nil, zerrors.ThrowInternal(err, "QUERY-0nJ3f", "Errors.TranslationFile.MergeError")
 	}
 	loginText := new(domain.CustomLoginText)
 	if err := json.Unmarshal(jsonbody, &loginText); err != nil {
-		return nil, errors.ThrowInternal(err, "QUERY-m93Jf", "Errors.TranslationFile.MergeError")
+		return nil, zerrors.ThrowInternal(err, "QUERY-m93Jf", "Errors.TranslationFile.MergeError")
 	}
 	loginText.AggregateID = authz.GetInstance(ctx).InstanceID()
 	loginText.IsDefault = true
@@ -193,9 +218,9 @@ func (q *Queries) readLoginTranslationFile(ctx context.Context, lang string) ([]
 	contents, ok := q.LoginTranslationFileContents[lang]
 	var err error
 	if !ok {
-		contents, err = q.readTranslationFile(q.LoginDir, fmt.Sprintf("/i18n/%s.yaml", lang))
-		if errors.IsNotFound(err) {
-			contents, err = q.readTranslationFile(q.LoginDir, fmt.Sprintf("/i18n/%s.yaml", authz.GetInstance(ctx).DefaultLanguage().String()))
+		contents, err = q.readTranslationFile(i18n.LOGIN, fmt.Sprintf("/i18n/%s.yaml", lang))
+		if zerrors.IsNotFound(err) {
+			contents, err = q.readTranslationFile(i18n.LOGIN, fmt.Sprintf("/i18n/%s.yaml", authz.GetInstance(ctx).DefaultLanguage().String()))
 		}
 		if err != nil {
 			return nil, err
@@ -205,7 +230,7 @@ func (q *Queries) readLoginTranslationFile(ctx context.Context, lang string) ([]
 	return contents, nil
 }
 
-func prepareCustomTextsQuery() (sq.SelectBuilder, func(*sql.Rows) (*CustomTexts, error)) {
+func prepareCustomTextsQuery(ctx context.Context, db prepareDatabase) (sq.SelectBuilder, func(*sql.Rows) (*CustomTexts, error)) {
 	return sq.Select(
 			CustomTextColAggregateID.identifier(),
 			CustomTextColSequence.identifier(),
@@ -216,7 +241,8 @@ func prepareCustomTextsQuery() (sq.SelectBuilder, func(*sql.Rows) (*CustomTexts,
 			CustomTextColKey.identifier(),
 			CustomTextColText.identifier(),
 			countColumn.identifier()).
-			From(customTextTable.identifier()).PlaceholderFormat(sq.Dollar),
+			From(customTextTable.identifier() + db.Timetravel(call.Took(ctx))).
+			PlaceholderFormat(sq.Dollar),
 		func(rows *sql.Rows) (*CustomTexts, error) {
 			customTexts := make([]*CustomText, 0)
 			var count uint64
@@ -242,7 +268,7 @@ func prepareCustomTextsQuery() (sq.SelectBuilder, func(*sql.Rows) (*CustomTexts,
 			}
 
 			if err := rows.Close(); err != nil {
-				return nil, errors.ThrowInternal(err, "QUERY-3n9fs", "Errors.Query.CloseRows")
+				return nil, zerrors.ThrowInternal(err, "QUERY-3n9fs", "Errors.Query.CloseRows")
 			}
 
 			return &CustomTexts{
@@ -377,11 +403,14 @@ func CustomTextsToLoginDomain(instanceID, aggregateID, lang string, texts *Custo
 		if strings.HasPrefix(text.Key, domain.LoginKeyRegistrationUser) {
 			registrationUserKeyToDomain(text, result)
 		}
+		if strings.HasPrefix(text.Key, domain.LoginKeyExternalRegistrationUserOverview) {
+			externalRegistrationUserKeyToDomain(text, result)
+		}
 		if strings.HasPrefix(text.Key, domain.LoginKeyRegistrationOrg) {
 			registrationOrgKeyToDomain(text, result)
 		}
 		if strings.HasPrefix(text.Key, domain.LoginKeyLinkingUserDone) {
-			linkingUserKeyToDomain(text, result)
+			linkingUserDoneKeyToDomain(text, result)
 		}
 		if strings.HasPrefix(text.Key, domain.LoginKeyExternalNotFound) {
 			externalUserNotFoundKeyToDomain(text, result)
@@ -859,6 +888,9 @@ func passwordChangeKeyToDomain(text *CustomText, result *domain.CustomLoginText)
 	if text.Key == domain.LoginKeyPasswordChangeDescription {
 		result.PasswordChange.Description = text.Text
 	}
+	if text.Key == domain.LoginKeyPasswordChangeExpiredDescription {
+		result.PasswordChange.ExpiredDescription = text.Text
+	}
 	if text.Key == domain.LoginKeyPasswordChangeOldPasswordLabel {
 		result.PasswordChange.OldPasswordLabel = text.Text
 	}
@@ -915,6 +947,57 @@ func registrationOptionKeyToDomain(text *CustomText, result *domain.CustomLoginT
 	}
 }
 
+func externalRegistrationUserKeyToDomain(text *CustomText, result *domain.CustomLoginText) {
+	if text.Key == domain.LoginKeyExternalRegistrationUserOverviewBackButtonText {
+		result.ExternalRegistrationUserOverview.BackButtonText = text.Text
+	}
+	if text.Key == domain.LoginKeyExternalRegistrationUserOverviewDescription {
+		result.ExternalRegistrationUserOverview.Description = text.Text
+	}
+	if text.Key == domain.LoginKeyExternalRegistrationUserOverviewEmailLabel {
+		result.ExternalRegistrationUserOverview.EmailLabel = text.Text
+	}
+	if text.Key == domain.LoginKeyExternalRegistrationUserOverviewFirstnameLabel {
+		result.ExternalRegistrationUserOverview.FirstnameLabel = text.Text
+	}
+	if text.Key == domain.LoginKeyExternalRegistrationUserOverviewLanguageLabel {
+		result.ExternalRegistrationUserOverview.LanguageLabel = text.Text
+	}
+	if text.Key == domain.LoginKeyExternalRegistrationUserOverviewLastnameLabel {
+		result.ExternalRegistrationUserOverview.LastnameLabel = text.Text
+	}
+	if text.Key == domain.LoginKeyExternalRegistrationUserOverviewNextButtonText {
+		result.ExternalRegistrationUserOverview.NextButtonText = text.Text
+	}
+	if text.Key == domain.LoginKeyExternalRegistrationUserOverviewNicknameLabel {
+		result.ExternalRegistrationUserOverview.NicknameLabel = text.Text
+	}
+	if text.Key == domain.LoginKeyExternalRegistrationUserOverviewPhoneLabel {
+		result.ExternalRegistrationUserOverview.PhoneLabel = text.Text
+	}
+	if text.Key == domain.LoginKeyExternalRegistrationUserOverviewPrivacyLinkText {
+		result.ExternalRegistrationUserOverview.PrivacyLinkText = text.Text
+	}
+	if text.Key == domain.LoginKeyExternalRegistrationUserOverviewTitle {
+		result.ExternalRegistrationUserOverview.Title = text.Text
+	}
+	if text.Key == domain.LoginKeyExternalRegistrationUserOverviewTOSAndPrivacyLabel {
+		result.ExternalRegistrationUserOverview.TOSAndPrivacyLabel = text.Text
+	}
+	if text.Key == domain.LoginKeyExternalRegistrationUserOverviewTOSConfirm {
+		result.ExternalRegistrationUserOverview.TOSConfirm = text.Text
+	}
+	if text.Key == domain.LoginKeyExternalRegistrationUserOverviewPrivacyConfirm {
+		result.ExternalRegistrationUserOverview.PrivacyConfirm = text.Text
+	}
+	if text.Key == domain.LoginKeyExternalRegistrationUserOverviewTOSLinkText {
+		result.ExternalRegistrationUserOverview.TOSLinkText = text.Text
+	}
+	if text.Key == domain.LoginKeyExternalRegistrationUserOverviewUsernameLabel {
+		result.ExternalRegistrationUserOverview.UsernameLabel = text.Text
+	}
+}
+
 func registrationUserKeyToDomain(text *CustomText, result *domain.CustomLoginText) {
 	if text.Key == domain.LoginKeyRegistrationUserTitle {
 		result.RegistrationUser.Title = text.Text
@@ -958,8 +1041,8 @@ func registrationUserKeyToDomain(text *CustomText, result *domain.CustomLoginTex
 	if text.Key == domain.LoginKeyRegistrationUserTOSLinkText {
 		result.RegistrationUser.TOSLinkText = text.Text
 	}
-	if text.Key == domain.LoginKeyRegistrationUserTOSConfirmAnd {
-		result.RegistrationUser.TOSConfirmAnd = text.Text
+	if text.Key == domain.LoginKeyRegistrationUserPrivacyConfirm {
+		result.RegistrationUser.PrivacyConfirm = text.Text
 	}
 	if text.Key == domain.LoginKeyRegistrationUserPrivacyLinkText {
 		result.RegistrationUser.PrivacyLinkText = text.Text
@@ -1009,8 +1092,8 @@ func registrationOrgKeyToDomain(text *CustomText, result *domain.CustomLoginText
 	if text.Key == domain.LoginKeyRegisterOrgTOSLinkText {
 		result.RegistrationOrg.TOSLinkText = text.Text
 	}
-	if text.Key == domain.LoginKeyRegisterOrgTosConfirmAnd {
-		result.RegistrationOrg.TOSConfirmAnd = text.Text
+	if text.Key == domain.LoginKeyRegisterOrgPrivacyConfirm {
+		result.RegistrationOrg.PrivacyConfirm = text.Text
 	}
 	if text.Key == domain.LoginKeyRegisterOrgPrivacyLinkText {
 		result.RegistrationOrg.PrivacyLinkText = text.Text
@@ -1020,7 +1103,7 @@ func registrationOrgKeyToDomain(text *CustomText, result *domain.CustomLoginText
 	}
 }
 
-func linkingUserKeyToDomain(text *CustomText, result *domain.CustomLoginText) {
+func linkingUserDoneKeyToDomain(text *CustomText, result *domain.CustomLoginText) {
 	if text.Key == domain.LoginKeyLinkingUserDoneTitle {
 		result.LinkingUsersDone.Title = text.Text
 	}
@@ -1037,31 +1120,31 @@ func linkingUserKeyToDomain(text *CustomText, result *domain.CustomLoginText) {
 
 func externalUserNotFoundKeyToDomain(text *CustomText, result *domain.CustomLoginText) {
 	if text.Key == domain.LoginKeyExternalNotFoundTitle {
-		result.ExternalNotFoundOption.Title = text.Text
+		result.ExternalNotFound.Title = text.Text
 	}
 	if text.Key == domain.LoginKeyExternalNotFoundDescription {
-		result.ExternalNotFoundOption.Description = text.Text
+		result.ExternalNotFound.Description = text.Text
 	}
 	if text.Key == domain.LoginKeyExternalNotFoundLinkButtonText {
-		result.ExternalNotFoundOption.LinkButtonText = text.Text
+		result.ExternalNotFound.LinkButtonText = text.Text
 	}
 	if text.Key == domain.LoginKeyExternalNotFoundAutoRegisterButtonText {
-		result.ExternalNotFoundOption.AutoRegisterButtonText = text.Text
+		result.ExternalNotFound.AutoRegisterButtonText = text.Text
 	}
 	if text.Key == domain.LoginKeyExternalNotFoundTOSAndPrivacyLabel {
-		result.ExternalNotFoundOption.TOSAndPrivacyLabel = text.Text
+		result.ExternalNotFound.TOSAndPrivacyLabel = text.Text
 	}
 	if text.Key == domain.LoginKeyExternalNotFoundTOSConfirm {
-		result.ExternalNotFoundOption.TOSConfirm = text.Text
+		result.ExternalNotFound.TOSConfirm = text.Text
 	}
 	if text.Key == domain.LoginKeyExternalNotFoundTOSLinkText {
-		result.ExternalNotFoundOption.TOSLinkText = text.Text
+		result.ExternalNotFound.TOSLinkText = text.Text
 	}
-	if text.Key == domain.LoginKeyExternalNotFoundTOSConfirmAnd {
-		result.ExternalNotFoundOption.TOSConfirmAnd = text.Text
+	if text.Key == domain.LoginKeyExternalNotFoundPrivacyConfirm {
+		result.ExternalNotFound.PrivacyConfirm = text.Text
 	}
 	if text.Key == domain.LoginKeyExternalNotFoundPrivacyLinkText {
-		result.ExternalNotFoundOption.PrivacyLinkText = text.Text
+		result.ExternalNotFound.PrivacyLinkText = text.Text
 	}
 }
 
@@ -1101,5 +1184,8 @@ func footerKeyToDomain(text *CustomText, result *domain.CustomLoginText) {
 	}
 	if text.Key == domain.LoginKeyFooterHelp {
 		result.Footer.Help = text.Text
+	}
+	if text.Key == domain.LoginKeyFooterSupportEmail {
+		result.Footer.SupportEmail = text.Text
 	}
 }

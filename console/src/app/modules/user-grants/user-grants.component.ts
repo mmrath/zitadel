@@ -2,13 +2,20 @@ import { SelectionModel } from '@angular/cdk/collections';
 import { AfterViewInit, Component, Input, OnInit, ViewChild } from '@angular/core';
 import { MatDialog } from '@angular/material/dialog';
 import { MatInput } from '@angular/material/input';
-import { MatSelectChange } from '@angular/material/select';
 import { MatTable } from '@angular/material/table';
 import { Router } from '@angular/router';
 import { tap } from 'rxjs/operators';
 import { enterAnimations } from 'src/app/animations';
+import { UserGrant as AuthUserGrant } from 'src/app/proto/generated/zitadel/auth_pb';
 import { Role } from 'src/app/proto/generated/zitadel/project_pb';
-import { Type, UserGrant, UserGrantQuery } from 'src/app/proto/generated/zitadel/user_pb';
+import {
+  Type,
+  UserGrant as MgmtUserGrant,
+  UserGrant,
+  UserGrantQuery,
+  UserGrantState,
+} from 'src/app/proto/generated/zitadel/user_pb';
+import { GrpcAuthService } from 'src/app/services/grpc-auth.service';
 import { ManagementService } from 'src/app/services/mgmt.service';
 import { ToastService } from 'src/app/services/toast.service';
 
@@ -17,6 +24,7 @@ import { PageEvent, PaginatorComponent } from '../paginator/paginator.component'
 import { UserGrantRoleDialogComponent } from '../user-grant-role-dialog/user-grant-role-dialog.component';
 import { WarnDialogComponent } from '../warn-dialog/warn-dialog.component';
 import { UserGrantContext, UserGrantsDataSource } from './user-grants-datasource';
+import { Org, OrgIDQuery, OrgQuery, OrgState } from 'src/app/proto/generated/zitadel/org_pb';
 
 export enum UserGrantListSearchKey {
   DISPLAY_NAME,
@@ -24,6 +32,9 @@ export enum UserGrantListSearchKey {
   PROJECT_NAME,
   ROLE_KEY,
 }
+
+type UserGrantAsObject = AuthUserGrant.AsObject | MgmtUserGrant.AsObject;
+
 @Component({
   selector: 'cnsl-user-grants',
   templateUrl: './user-grants.component.html',
@@ -38,10 +49,10 @@ export class UserGrantsComponent implements OnInit, AfterViewInit {
   @Input() context: UserGrantContext = UserGrantContext.NONE;
   @Input() refreshOnPreviousRoutes: string[] = [];
 
-  public dataSource: UserGrantsDataSource = new UserGrantsDataSource(this.userService);
-  public selection: SelectionModel<UserGrant.AsObject> = new SelectionModel<UserGrant.AsObject>(true, []);
+  public dataSource: UserGrantsDataSource = new UserGrantsDataSource(this.authService, this.userService);
+  public selection: SelectionModel<UserGrantAsObject> = new SelectionModel<UserGrantAsObject>(true, []);
   @ViewChild(PaginatorComponent) public paginator?: PaginatorComponent;
-  @ViewChild(MatTable) public table?: MatTable<UserGrant.AsObject>;
+  @ViewChild(MatTable) public table?: MatTable<UserGrantAsObject>;
 
   @Input() disableWrite: boolean = false;
   @Input() disableDelete: boolean = false;
@@ -52,7 +63,7 @@ export class UserGrantsComponent implements OnInit, AfterViewInit {
   @ViewChild('input') public filter!: MatInput;
 
   public projectRoleOptions: Role.AsObject[] = [];
-  public routerLink: any = [''];
+  public routerLink: any = undefined;
 
   public loadedId: string = '';
   public loadedProjectId: string = '';
@@ -61,11 +72,13 @@ export class UserGrantsComponent implements OnInit, AfterViewInit {
   public UserGrantContext: any = UserGrantContext;
   public Type: any = Type;
   public ActionKeysType: any = ActionKeysType;
+  public UserGrantState: any = UserGrantState;
   @Input() public type: Type | undefined = undefined;
 
   public filterOpen: boolean = false;
-
+  public myOrgs: Array<Org.AsObject> = [];
   constructor(
+    private authService: GrpcAuthService,
     private userService: ManagementService,
     private toast: ToastService,
     private dialog: MatDialog,
@@ -80,6 +93,7 @@ export class UserGrantsComponent implements OnInit, AfterViewInit {
     'type',
     'creationDate',
     'changeDate',
+    'state',
     'roleNamesList',
     'actions',
   ];
@@ -88,18 +102,21 @@ export class UserGrantsComponent implements OnInit, AfterViewInit {
     switch (this.context) {
       case UserGrantContext.OWNED_PROJECT:
         if (this.projectId) {
-          // this.getProjectRoleOptions(this.projectId);
           this.routerLink = ['/grant-create', 'project', this.projectId];
         }
         break;
       case UserGrantContext.GRANTED_PROJECT:
         if (this.grantId) {
           this.routerLink = ['/grant-create', 'project', this.projectId, 'grant', this.grantId];
-          // this.getGrantRoleOptions(this.grantId, this.projectId);
         }
         break;
       case UserGrantContext.USER:
         if (this.userId) {
+          this.routerLink = ['/grant-create', 'user', this.userId];
+        }
+        break;
+      case UserGrantContext.AUTHUSER:
+        if (this.grantId) {
           this.routerLink = ['/grant-create', 'user', this.userId];
         }
         break;
@@ -108,6 +125,9 @@ export class UserGrantsComponent implements OnInit, AfterViewInit {
     }
 
     this.loadGrantsPage(this.type);
+    this.authService.listMyProjectOrgs(undefined, 0).then((orgs) => {
+      this.myOrgs = orgs.resultList;
+    });
   }
 
   public ngAfterViewInit(): void {
@@ -119,7 +139,7 @@ export class UserGrantsComponent implements OnInit, AfterViewInit {
     this.loadGrantsPage(type);
   }
 
-  public getType(grant: UserGrant.AsObject): string {
+  public getType(grant: UserGrantAsObject): string {
     if (grant.projectGrantId) {
       return 'Project Grant';
     } else if (grant.projectId) {
@@ -161,11 +181,11 @@ export class UserGrantsComponent implements OnInit, AfterViewInit {
       : this.dataSource.grantsSubject.value.forEach((row) => this.selection.select(row));
   }
 
-  public openEditDialog(grant: UserGrant.AsObject): void {
+  public openEditDialog(grant: UserGrantAsObject): void {
     const dialogRef = this.dialog.open(UserGrantRoleDialogComponent, {
       data: {
         projectId: grant.projectId,
-        grantId: grant.projectGrantId,
+        grantId: grant?.projectGrantId,
         selectedRoleKeysList: grant.roleKeysList,
         i18nTitle: 'GRANTS.EDIT.TITLE',
       },
@@ -175,7 +195,11 @@ export class UserGrantsComponent implements OnInit, AfterViewInit {
     dialogRef.afterClosed().subscribe((resp) => {
       if (resp && resp.roles) {
         this.userService
-          .updateUserGrant(grant.id, grant.userId, resp.roles)
+          .updateUserGrant(
+            (grant as MgmtUserGrant.AsObject).id ?? (grant as AuthUserGrant.AsObject).grantId,
+            grant.userId,
+            resp.roles,
+          )
           .then(() => {
             this.toast.showInfo('GRANTS.TOAST.UPDATED', true);
             grant.roleKeysList = resp.roles;
@@ -187,18 +211,7 @@ export class UserGrantsComponent implements OnInit, AfterViewInit {
     });
   }
 
-  updateRoles(grant: UserGrant.AsObject, selectionChange: MatSelectChange): void {
-    this.userService
-      .updateUserGrant(grant.id, grant.userId, selectionChange.value)
-      .then(() => {
-        this.toast.showInfo('GRANTS.TOAST.UPDATED', true);
-      })
-      .catch((error) => {
-        this.toast.showError(error);
-      });
-  }
-
-  public deleteGrant(event: any, grant: UserGrant.AsObject): void {
+  public deleteGrant(event: any, grant: MgmtUserGrant.AsObject): void {
     event.stopPropagation();
 
     const dialogRef = this.dialog.open(WarnDialogComponent, {
@@ -219,7 +232,9 @@ export class UserGrantsComponent implements OnInit, AfterViewInit {
             this.toast.showInfo('GRANTS.TOAST.REMOVED', true);
             const data = this.dataSource.grantsSubject.getValue();
 
-            const index = data.findIndex((i) => i.id === grant.id);
+            const index = data.findIndex(
+              (i) => (i as MgmtUserGrant.AsObject).id && (i as MgmtUserGrant.AsObject).id === grant.id,
+            );
             if (index > -1) {
               data.splice(index, 1);
               this.dataSource.grantsSubject.next(data);
@@ -246,12 +261,12 @@ export class UserGrantsComponent implements OnInit, AfterViewInit {
     dialogRef.afterClosed().subscribe((resp) => {
       if (resp) {
         this.userService
-          .bulkRemoveUserGrant(this.selection.selected.map((grant) => grant.id))
+          .bulkRemoveUserGrant(this.selection.selected.map((grant) => (grant as MgmtUserGrant.AsObject).id))
           .then(() => {
             this.toast.showInfo('GRANTS.TOAST.BULKREMOVED', true);
             const data = this.dataSource.grantsSubject.getValue();
             this.selection.selected.forEach((item) => {
-              const index = data.findIndex((i) => i.id === item.id);
+              const index = data.findIndex((i) => (i as MgmtUserGrant.AsObject).id === (item as MgmtUserGrant.AsObject).id);
               if (index > -1) {
                 data.splice(index, 1);
                 this.dataSource.grantsSubject.next(data);
@@ -296,6 +311,21 @@ export class UserGrantsComponent implements OnInit, AfterViewInit {
     } else {
       this.userGrantListSearchKey = undefined;
       this.loadGrantsPage(this.type);
+    }
+  }
+
+  public async showUser(grant: UserGrant.AsObject) {
+    const orgQuery = new OrgQuery();
+    const orgIdQuery = new OrgIDQuery();
+    orgIdQuery.setId(grant.grantedOrgId);
+    orgQuery.setIdQuery(orgIdQuery);
+
+    const orgs = (await this.authService.listMyProjectOrgs(1, 0, [orgQuery])).resultList;
+    if (orgs.length === 1) {
+      this.authService.setActiveOrg(orgs[0]);
+      this.router.navigate(['/users', grant.userId]);
+    } else {
+      this.toast.showInfo('GRANTS.TOAST.CANTSHOWINFO', true);
     }
   }
 }

@@ -2,46 +2,55 @@ package user
 
 import (
 	"context"
-	"encoding/json"
 	"time"
 
-	"github.com/zitadel/zitadel/internal/eventstore"
-
+	"github.com/zitadel/zitadel/internal/api/http"
 	"github.com/zitadel/zitadel/internal/crypto"
 	"github.com/zitadel/zitadel/internal/domain"
-	"github.com/zitadel/zitadel/internal/errors"
-	"github.com/zitadel/zitadel/internal/eventstore/repository"
+	"github.com/zitadel/zitadel/internal/eventstore"
+	"github.com/zitadel/zitadel/internal/notification/senders"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 const (
 	passwordEventPrefix             = humanEventPrefix + "password."
 	HumanPasswordChangedType        = passwordEventPrefix + "changed"
+	HumanPasswordChangeSentType     = passwordEventPrefix + "change.sent"
 	HumanPasswordCodeAddedType      = passwordEventPrefix + "code.added"
 	HumanPasswordCodeSentType       = passwordEventPrefix + "code.sent"
 	HumanPasswordCheckSucceededType = passwordEventPrefix + "check.succeeded"
 	HumanPasswordCheckFailedType    = passwordEventPrefix + "check.failed"
+	HumanPasswordHashUpdatedType    = passwordEventPrefix + "hash.updated"
 )
 
 type HumanPasswordChangedEvent struct {
 	eventstore.BaseEvent `json:"-"`
 
-	Secret         *crypto.CryptoValue `json:"secret,omitempty"`
-	ChangeRequired bool                `json:"changeRequired"`
-	UserAgentID    string              `json:"userAgentID,omitempty"`
+	// New events only use EncodedHash. However, the secret field
+	// is preserved to handle events older than the switch to Passwap.
+	Secret            *crypto.CryptoValue `json:"secret,omitempty"`
+	EncodedHash       string              `json:"encodedHash,omitempty"`
+	ChangeRequired    bool                `json:"changeRequired"`
+	UserAgentID       string              `json:"userAgentID,omitempty"`
+	TriggeredAtOrigin string              `json:"triggerOrigin,omitempty"`
 }
 
-func (e *HumanPasswordChangedEvent) Data() interface{} {
+func (e *HumanPasswordChangedEvent) Payload() interface{} {
 	return e
 }
 
-func (e *HumanPasswordChangedEvent) UniqueConstraints() []*eventstore.EventUniqueConstraint {
+func (e *HumanPasswordChangedEvent) UniqueConstraints() []*eventstore.UniqueConstraint {
 	return nil
+}
+
+func (e *HumanPasswordChangedEvent) TriggerOrigin() string {
+	return e.TriggeredAtOrigin
 }
 
 func NewHumanPasswordChangedEvent(
 	ctx context.Context,
 	aggregate *eventstore.Aggregate,
-	secret *crypto.CryptoValue,
+	encodeHash string,
 	changeRequired bool,
 	userAgentID string,
 ) *HumanPasswordChangedEvent {
@@ -51,19 +60,20 @@ func NewHumanPasswordChangedEvent(
 			aggregate,
 			HumanPasswordChangedType,
 		),
-		Secret:         secret,
-		ChangeRequired: changeRequired,
-		UserAgentID:    userAgentID,
+		EncodedHash:       encodeHash,
+		ChangeRequired:    changeRequired,
+		UserAgentID:       userAgentID,
+		TriggeredAtOrigin: http.DomainContext(ctx).Origin(),
 	}
 }
 
-func HumanPasswordChangedEventMapper(event *repository.Event) (eventstore.Event, error) {
+func HumanPasswordChangedEventMapper(event eventstore.Event) (eventstore.Event, error) {
 	humanAdded := &HumanPasswordChangedEvent{
 		BaseEvent: *eventstore.BaseEventFromRepo(event),
 	}
-	err := json.Unmarshal(event.Data, humanAdded)
+	err := event.Unmarshal(humanAdded)
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "USER-4M0sd", "unable to unmarshal human password changed")
+		return nil, zerrors.ThrowInternal(err, "USER-4M0sd", "unable to unmarshal human password changed")
 	}
 
 	return humanAdded, nil
@@ -72,17 +82,27 @@ func HumanPasswordChangedEventMapper(event *repository.Event) (eventstore.Event,
 type HumanPasswordCodeAddedEvent struct {
 	eventstore.BaseEvent `json:"-"`
 
-	Code             *crypto.CryptoValue     `json:"code,omitempty"`
-	Expiry           time.Duration           `json:"expiry,omitempty"`
-	NotificationType domain.NotificationType `json:"notificationType,omitempty"`
+	Code              *crypto.CryptoValue     `json:"code,omitempty"`
+	Expiry            time.Duration           `json:"expiry,omitempty"`
+	NotificationType  domain.NotificationType `json:"notificationType,omitempty"`
+	URLTemplate       string                  `json:"url_template,omitempty"`
+	CodeReturned      bool                    `json:"code_returned,omitempty"`
+	TriggeredAtOrigin string                  `json:"triggerOrigin,omitempty"`
+	// AuthRequest is only used in V1 Login UI
+	AuthRequestID string `json:"authRequestID,omitempty"`
+	GeneratorID   string `json:"generatorId,omitempty"`
 }
 
-func (e *HumanPasswordCodeAddedEvent) Data() interface{} {
+func (e *HumanPasswordCodeAddedEvent) Payload() interface{} {
 	return e
 }
 
-func (e *HumanPasswordCodeAddedEvent) UniqueConstraints() []*eventstore.EventUniqueConstraint {
+func (e *HumanPasswordCodeAddedEvent) UniqueConstraints() []*eventstore.UniqueConstraint {
 	return nil
+}
+
+func (e *HumanPasswordCodeAddedEvent) TriggerOrigin() string {
+	return e.TriggeredAtOrigin
 }
 
 func NewHumanPasswordCodeAddedEvent(
@@ -91,6 +111,8 @@ func NewHumanPasswordCodeAddedEvent(
 	code *crypto.CryptoValue,
 	expiry time.Duration,
 	notificationType domain.NotificationType,
+	authRequestID,
+	generatorID string,
 ) *HumanPasswordCodeAddedEvent {
 	return &HumanPasswordCodeAddedEvent{
 		BaseEvent: *eventstore.NewBaseEventForPush(
@@ -98,48 +120,106 @@ func NewHumanPasswordCodeAddedEvent(
 			aggregate,
 			HumanPasswordCodeAddedType,
 		),
-		Code:             code,
-		Expiry:           expiry,
-		NotificationType: notificationType,
+		Code:              code,
+		Expiry:            expiry,
+		NotificationType:  notificationType,
+		TriggeredAtOrigin: http.DomainContext(ctx).Origin(),
+		AuthRequestID:     authRequestID,
+		GeneratorID:       generatorID,
 	}
 }
 
-func HumanPasswordCodeAddedEventMapper(event *repository.Event) (eventstore.Event, error) {
+func NewHumanPasswordCodeAddedEventV2(
+	ctx context.Context,
+	aggregate *eventstore.Aggregate,
+	code *crypto.CryptoValue,
+	expiry time.Duration,
+	notificationType domain.NotificationType,
+	urlTemplate string,
+	codeReturned bool,
+	generatorID string,
+) *HumanPasswordCodeAddedEvent {
+	return &HumanPasswordCodeAddedEvent{
+		BaseEvent: *eventstore.NewBaseEventForPush(
+			ctx,
+			aggregate,
+			HumanPasswordCodeAddedType,
+		),
+		Code:              code,
+		Expiry:            expiry,
+		NotificationType:  notificationType,
+		URLTemplate:       urlTemplate,
+		CodeReturned:      codeReturned,
+		TriggeredAtOrigin: http.DomainContext(ctx).Origin(),
+		GeneratorID:       generatorID,
+	}
+}
+
+func HumanPasswordCodeAddedEventMapper(event eventstore.Event) (eventstore.Event, error) {
 	humanAdded := &HumanPasswordCodeAddedEvent{
 		BaseEvent: *eventstore.BaseEventFromRepo(event),
 	}
-	err := json.Unmarshal(event.Data, humanAdded)
+	err := event.Unmarshal(humanAdded)
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "USER-Ms90d", "unable to unmarshal human password code added")
+		return nil, zerrors.ThrowInternal(err, "USER-Ms90d", "unable to unmarshal human password code added")
 	}
 
 	return humanAdded, nil
 }
 
 type HumanPasswordCodeSentEvent struct {
-	eventstore.BaseEvent `json:"-"`
+	*eventstore.BaseEvent `json:"-"`
+
+	GeneratorInfo *senders.CodeGeneratorInfo `json:"generatorInfo,omitempty"`
 }
 
-func (e *HumanPasswordCodeSentEvent) Data() interface{} {
+func (e *HumanPasswordCodeSentEvent) SetBaseEvent(event *eventstore.BaseEvent) {
+	e.BaseEvent = event
+}
+
+func (e *HumanPasswordCodeSentEvent) Payload() interface{} {
+	return e
+}
+
+func (e *HumanPasswordCodeSentEvent) UniqueConstraints() []*eventstore.UniqueConstraint {
 	return nil
 }
 
-func (e *HumanPasswordCodeSentEvent) UniqueConstraints() []*eventstore.EventUniqueConstraint {
-	return nil
-}
-
-func NewHumanPasswordCodeSentEvent(ctx context.Context, aggregate *eventstore.Aggregate) *HumanPasswordCodeSentEvent {
+func NewHumanPasswordCodeSentEvent(ctx context.Context, aggregate *eventstore.Aggregate, generatorInfo *senders.CodeGeneratorInfo) *HumanPasswordCodeSentEvent {
 	return &HumanPasswordCodeSentEvent{
-		BaseEvent: *eventstore.NewBaseEventForPush(
+		BaseEvent: eventstore.NewBaseEventForPush(
 			ctx,
 			aggregate,
 			HumanPasswordCodeSentType,
 		),
+		GeneratorInfo: generatorInfo,
 	}
 }
 
-func HumanPasswordCodeSentEventMapper(event *repository.Event) (eventstore.Event, error) {
-	return &HumanPasswordCodeSentEvent{
+type HumanPasswordChangeSentEvent struct {
+	eventstore.BaseEvent `json:"-"`
+}
+
+func (e *HumanPasswordChangeSentEvent) Payload() interface{} {
+	return nil
+}
+
+func (e *HumanPasswordChangeSentEvent) UniqueConstraints() []*eventstore.UniqueConstraint {
+	return nil
+}
+
+func NewHumanPasswordChangeSentEvent(ctx context.Context, aggregate *eventstore.Aggregate) *HumanPasswordChangeSentEvent {
+	return &HumanPasswordChangeSentEvent{
+		BaseEvent: *eventstore.NewBaseEventForPush(
+			ctx,
+			aggregate,
+			HumanPasswordChangeSentType,
+		),
+	}
+}
+
+func HumanPasswordChangeSentEventMapper(event eventstore.Event) (eventstore.Event, error) {
+	return &HumanPasswordChangeSentEvent{
 		BaseEvent: *eventstore.BaseEventFromRepo(event),
 	}, nil
 }
@@ -149,11 +229,11 @@ type HumanPasswordCheckSucceededEvent struct {
 	*AuthRequestInfo
 }
 
-func (e *HumanPasswordCheckSucceededEvent) Data() interface{} {
+func (e *HumanPasswordCheckSucceededEvent) Payload() interface{} {
 	return e
 }
 
-func (e *HumanPasswordCheckSucceededEvent) UniqueConstraints() []*eventstore.EventUniqueConstraint {
+func (e *HumanPasswordCheckSucceededEvent) UniqueConstraints() []*eventstore.UniqueConstraint {
 	return nil
 }
 
@@ -172,13 +252,13 @@ func NewHumanPasswordCheckSucceededEvent(
 	}
 }
 
-func HumanPasswordCheckSucceededEventMapper(event *repository.Event) (eventstore.Event, error) {
+func HumanPasswordCheckSucceededEventMapper(event eventstore.Event) (eventstore.Event, error) {
 	humanAdded := &HumanPasswordCheckSucceededEvent{
 		BaseEvent: *eventstore.BaseEventFromRepo(event),
 	}
-	err := json.Unmarshal(event.Data, humanAdded)
+	err := event.Unmarshal(humanAdded)
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "USER-5M9sd", "unable to unmarshal human password check succeeded")
+		return nil, zerrors.ThrowInternal(err, "USER-5M9sd", "unable to unmarshal human password check succeeded")
 	}
 
 	return humanAdded, nil
@@ -189,11 +269,11 @@ type HumanPasswordCheckFailedEvent struct {
 	*AuthRequestInfo
 }
 
-func (e *HumanPasswordCheckFailedEvent) Data() interface{} {
+func (e *HumanPasswordCheckFailedEvent) Payload() interface{} {
 	return e
 }
 
-func (e *HumanPasswordCheckFailedEvent) UniqueConstraints() []*eventstore.EventUniqueConstraint {
+func (e *HumanPasswordCheckFailedEvent) UniqueConstraints() []*eventstore.UniqueConstraint {
 	return nil
 }
 
@@ -212,14 +292,46 @@ func NewHumanPasswordCheckFailedEvent(
 	}
 }
 
-func HumanPasswordCheckFailedEventMapper(event *repository.Event) (eventstore.Event, error) {
+func HumanPasswordCheckFailedEventMapper(event eventstore.Event) (eventstore.Event, error) {
 	humanAdded := &HumanPasswordCheckFailedEvent{
 		BaseEvent: *eventstore.BaseEventFromRepo(event),
 	}
-	err := json.Unmarshal(event.Data, humanAdded)
+	err := event.Unmarshal(humanAdded)
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "USER-4m9fs", "unable to unmarshal human password check failed")
+		return nil, zerrors.ThrowInternal(err, "USER-4m9fs", "unable to unmarshal human password check failed")
 	}
 
 	return humanAdded, nil
+}
+
+type HumanPasswordHashUpdatedEvent struct {
+	eventstore.BaseEvent `json:"-"`
+	EncodedHash          string `json:"encodedHash,omitempty"`
+}
+
+func (e *HumanPasswordHashUpdatedEvent) Payload() interface{} {
+	return e
+}
+
+func (e *HumanPasswordHashUpdatedEvent) UniqueConstraints() []*eventstore.UniqueConstraint {
+	return nil
+}
+
+func (e *HumanPasswordHashUpdatedEvent) SetBaseEvent(base *eventstore.BaseEvent) {
+	e.BaseEvent = *base
+}
+
+func NewHumanPasswordHashUpdatedEvent(
+	ctx context.Context,
+	aggregate *eventstore.Aggregate,
+	encoded string,
+) *HumanPasswordHashUpdatedEvent {
+	return &HumanPasswordHashUpdatedEvent{
+		BaseEvent: *eventstore.NewBaseEventForPush(
+			ctx,
+			aggregate,
+			HumanPasswordHashUpdatedType,
+		),
+		EncodedHash: encoded,
+	}
 }

@@ -1,15 +1,15 @@
 ---
-title: Applications
+title: ZITADEL Applications
+sidebar_label: Applications
 ---
 
 import ThemedImage from "@theme/ThemedImage";
 
-import AuthType from "../../integrate/application/auth-type.mdx";
-import RedirectURIs from "../../integrate/application/redirect-uris.mdx";
-import GenerateKey from "../../integrate/application/generate-key.mdx";
-import ReviewConfig from "../../integrate/application/review-config.mdx";
+import AuthType from "../../integrate/application/_auth-type.mdx";
+import ReviewConfig from "../../integrate/application/_review-config.mdx";
+import AppType from "./_application-types.mdx";
 
-# What is an application?
+## What is an application?
 
 Applications are the entry point to your project.
 Users either login into one of your clients and interact with them directly or use one of your APIs.
@@ -19,7 +19,7 @@ To access your applications, navigate to your project and select your applicatio
 
 <img
   alt="Granted project"
-  src="/img/guides/console/applications.png"
+  src="/docs/img/guides/console/applications.png"
   width="750px"
 />
 
@@ -31,23 +31,20 @@ To add an application to your project, click on the add button and select your a
 
 <img
   alt="Add application"
-  src="/img/guides/console/addapplication.png"
+  src="/docs/img/guides/console/addapplication.png"
   width="120px"
 />
 
 ## Application Types
 
-At the moment ZITADEL offers four client types:
+At the moment ZITADEL offers five client types:
 
-- [**Web**](#web) (Server-side web applications such as java, .net, ...)
-- [**Native**](#native) (native, mobile or desktop applications)
-- [**User Agent**](#user-agent) (single page applications / SPA, generally JavaScript executed in the browser)
-- [**API**](#api) (OAuth Resource Server)
+<AppType />
 
 The first three options (Web, Native and User Agent) require user interaction, the fourth option (API) has no direct user-interaction.
 Depending on the app type, there are small differences in the possible settings.
 
-To get a good understanding about user profiles and recommended flows, read the following [guide](../../integrate/oauth-recommended-flows.md#different-client-profiles).
+To get a good understanding about user profiles and recommended flows, read the following [guide](../../integrate/login/oidc/oauth-recommended-flows.md#different-client-profiles).
 
 ### Web
 
@@ -86,6 +83,17 @@ Following authentication types can be used:
 
 After selecting your Apps Type and Authentication Method, you may need to specify redirect URIs.
 
+### SAML
+
+If your application doesn't support the OIDC standard, but SAML this is the right application type to choose. SAML is an open standard used for authentication based on XML.
+
+After entering a name and choosing the application type "SAML", you will get to the SAML configuration screen.
+
+You can either add a link to a SAML metadata file or upload it directly.
+SAML metadata is an XML document which contains information necessary for interaction with SAML-enabled identity or service providers.
+
+You can find some example configurations for SAML 2.0 in our [integrate services](/docs/guides/integrate/services) guides
+
 ## Redirect URIs
 
 App Types with User interaction (Web, Native and User Agent) require redirect URIs.
@@ -97,11 +105,43 @@ Native applications can use a different protocol than http or https in order to 
 
 <img
   alt="Redirect URIs"
-  src="/img/guides/console/redirecturis.png"
+  src="/docs/img/guides/console/redirecturis.png"
   width="600px"
 />
 
-In order to **develop locally** and due to the fact that any ZITADEL configuration is secure by default, ZITADEL requires you enable **dev mode** if you want to redirect users to URIs other than https://.
+### Development mode
+
+In order to develop locally, or you want to redirect users to any other protocol than https://, you must enable **Development mode**.
+When disabled only https is allowed, as ZITADEL's configuration is secure by default.
+
+<img
+  alt="Development mode"
+  src="/docs/img/guides/console/developmentmode.png"
+  width="600px"
+/>
+
+Development mode also allows glob patterns in redirect URIs with the following special terms in the patterns:
+
+| Special Terms | Meaning                                                                                                    |
+| ------------- | ---------------------------------------------------------------------------------------------------------- |
+| `*`           | matches any sequence of non-path-separators                                                                |
+| `/**/`        | matches zero or more directories                                                                           |
+| `?`           | matches any single non-path-separator character                                                            |
+| `[class]`     | matches any single non-path-separator character against a class of characters [see "character classes"][1] |
+| `{alt1,...}`  | matches a sequence of characters if one of the comma-separated alternatives matches                        |
+
+[1]: https://github.com/bmatcuk/doublestar?tab=readme-ov-file#character-classes
+
+Special character can be escaped with a backslash (`\`).
+
+Double stars (`**`) should appear surrounded by a path separators such as `/**/`.
+A mid-pattern double star (`**`) behaves like bash's glob star option: a pattern
+such as `path/to/**.txt` would return the same results as `path/to/*.txt`. The
+pattern you're looking for is `path/to/**/*.txt`.
+
+*Source: [github.com/bmatcuk/doublestar](https://github.com/bmatcuk/doublestar?tab=readme-ov-file#patterns)*
+
+> When IPv6 URIs are used as redirects in development mode, square brackets must be escaped as they are also Special Terms for globs. `http://\[::1\]:80`
 
 ## Review Configuration
 
@@ -116,7 +156,7 @@ You can easily change your authentication method via the colored toggle on top o
 
 <img
   alt="Redirect URIs"
-  src="/img/guides/console/application.png"
+  src="/docs/img/guides/console/application.png"
   width="800px"
 />
 
@@ -125,7 +165,7 @@ Tasks for completion are shown in the field.
 
 <img
   alt="OIDC Compliance"
-  src="/img/guides/console/oidc-compliance.png"
+  src="/docs/img/guides/console/oidc-compliance.png"
   width="600px"
 />
 
@@ -136,7 +176,7 @@ On the bottom you can optionally set a **ClockSkew** time which is added to the 
 
 <img
   alt="Token settings"
-  src="/img/guides/console/app-token-settings.png"
+  src="/docs/img/guides/console/app-token-settings.png"
   width="600px"
 />
 
@@ -144,10 +184,11 @@ On the bottom you can optionally set a **ClockSkew** time which is added to the 
 
 Like on creation, you can modify you redirect settings here.
 Note that for local development you most likely have to enable development mode, as redirects to http:// are otherwise blocked.
+On Native Apps you can also skip the Login Success Page.
 
 <img
   alt="Redirect URIs"
-  src="/img/guides/console/redirect-uris.png"
+  src="/docs/img/guides/console/redirect-uris.png"
   width="500px"
 />
 
@@ -157,6 +198,6 @@ If you need to allow additional origins which should **NOT** be used as redirect
 
 <img
   alt="Additional origins"
-  src="/img/guides/console/additional-origins.png"
+  src="/docs/img/guides/console/additional-origins.png"
   width="500px"
 />

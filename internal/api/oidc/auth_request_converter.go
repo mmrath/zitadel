@@ -6,24 +6,16 @@ import (
 	"strings"
 	"time"
 
-	"github.com/zitadel/oidc/v2/pkg/oidc"
-	"github.com/zitadel/oidc/v2/pkg/op"
+	"github.com/zitadel/logging"
+	"github.com/zitadel/oidc/v3/pkg/oidc"
+	"github.com/zitadel/oidc/v3/pkg/op"
 	"golang.org/x/text/language"
 
 	"github.com/zitadel/zitadel/internal/api/authz"
 	http_utils "github.com/zitadel/zitadel/internal/api/http"
 	"github.com/zitadel/zitadel/internal/domain"
-	"github.com/zitadel/zitadel/internal/errors"
 	"github.com/zitadel/zitadel/internal/user/model"
-)
-
-const (
-	// DEPRECATED: use `amrPWD` instead
-	amrPassword     = "password"
-	amrPWD          = "pwd"
-	amrMFA          = "mfa"
-	amrOTP          = "otp"
-	amrUserPresence = "user"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 type AuthRequest struct {
@@ -40,19 +32,19 @@ func (a *AuthRequest) GetACR() string {
 }
 
 func (a *AuthRequest) GetAMR() []string {
-	amr := make([]string, 0)
+	list := make([]string, 0)
 	if a.PasswordVerified {
-		amr = append(amr, amrPassword, amrPWD)
+		list = append(list, Password, PWD)
 	}
 	if len(a.MFAsVerified) > 0 {
-		amr = append(amr, amrMFA)
+		list = append(list, MFA)
 		for _, mfa := range a.MFAsVerified {
 			if amrMFA := AMRFromMFAType(mfa); amrMFA != "" {
-				amr = append(amr, amrMFA)
+				list = append(list, amrMFA)
 			}
 		}
 	}
-	return amr
+	return list
 }
 
 func (a *AuthRequest) GetAudience() []string {
@@ -84,7 +76,7 @@ func (a *AuthRequest) GetResponseType() oidc.ResponseType {
 }
 
 func (a *AuthRequest) GetResponseMode() oidc.ResponseMode {
-	return ""
+	return ResponseModeToOIDC(a.oidc().ResponseMode)
 }
 
 func (a *AuthRequest) GetScopes() []string {
@@ -99,27 +91,18 @@ func (a *AuthRequest) GetSubject() string {
 	return a.UserID
 }
 
-func (a *AuthRequest) Done() bool {
-	for _, step := range a.PossibleSteps {
-		if step.Type() == domain.NextStepRedirectToCallback {
-			return true
-		}
-	}
-	return false
-}
-
 func (a *AuthRequest) oidc() *domain.AuthRequestOIDC {
 	return a.Request.(*domain.AuthRequestOIDC)
 }
 
-func AuthRequestFromBusiness(authReq *domain.AuthRequest) (_ op.AuthRequest, err error) {
+func AuthRequestFromBusiness(authReq *domain.AuthRequest) (_ *AuthRequest, err error) {
 	if _, ok := authReq.Request.(*domain.AuthRequestOIDC); !ok {
-		return nil, errors.ThrowInvalidArgument(nil, "OIDC-Haz7A", "auth request is not of type oidc")
+		return nil, zerrors.ThrowInvalidArgument(nil, "OIDC-Haz7A", "auth request is not of type oidc")
 	}
 	return &AuthRequest{authReq}, nil
 }
 
-func CreateAuthRequestToBusiness(ctx context.Context, authReq *oidc.AuthRequest, userAgentID, userID string) *domain.AuthRequest {
+func CreateAuthRequestToBusiness(ctx context.Context, authReq *oidc.AuthRequest, userAgentID, userID string, audience []string) *domain.AuthRequest {
 	return &domain.AuthRequest{
 		CreationDate:        time.Now(),
 		AgentID:             userAgentID,
@@ -135,9 +118,11 @@ func CreateAuthRequestToBusiness(ctx context.Context, authReq *oidc.AuthRequest,
 		MaxAuthAge:          MaxAgeToBusiness(authReq.MaxAge),
 		UserID:              userID,
 		InstanceID:          authz.GetInstance(ctx).InstanceID(),
+		Audience:            audience,
 		Request: &domain.AuthRequestOIDC{
 			Scopes:        authReq.Scopes,
 			ResponseType:  ResponseTypeToBusiness(authReq.ResponseType),
+			ResponseMode:  ResponseModeToBusiness(authReq.ResponseMode),
 			Nonce:         authReq.Nonce,
 			CodeChallenge: CodeChallengeToBusiness(authReq.CodeChallenge, authReq.CodeChallengeMethod),
 		},
@@ -173,7 +158,7 @@ func IpFromContext(ctx context.Context) net.IP {
 }
 
 func PromptToBusiness(oidcPrompt []string) []domain.Prompt {
-	prompts := make([]domain.Prompt, len(oidcPrompt))
+	prompts := make([]domain.Prompt, 0, len(oidcPrompt))
 	for _, oidcPrompt := range oidcPrompt {
 		switch oidcPrompt {
 		case oidc.PromptNone:
@@ -249,6 +234,27 @@ func ResponseTypeToOIDC(responseType domain.OIDCResponseType) oidc.ResponseType 
 	}
 }
 
+// ResponseModeToBusiness returns the OIDCResponseMode enum value from the domain package.
+// An empty or invalid value defaults to unspecified.
+func ResponseModeToBusiness(responseMode oidc.ResponseMode) domain.OIDCResponseMode {
+	if responseMode == "" {
+		return domain.OIDCResponseModeUnspecified
+	}
+	out, err := domain.OIDCResponseModeString(string(responseMode))
+	logging.OnError(err).Debugln("invalid oidc response_mode, using default")
+	return out
+}
+
+// ResponseModeToOIDC return the oidc string representation of the enum value from the domain package.
+// When responseMode is `0 - unspecified`, an empty string is returned.
+// This allows the oidc package to pick the appropriate response mode based on the response type.
+func ResponseModeToOIDC(responseMode domain.OIDCResponseMode) oidc.ResponseMode {
+	if responseMode == domain.OIDCResponseModeUnspecified || !responseMode.IsAOIDCResponseMode() {
+		return ""
+	}
+	return oidc.ResponseMode(responseMode.String())
+}
+
 func CodeChallengeToBusiness(challenge string, method oidc.CodeChallengeMethod) *domain.OIDCCodeChallenge {
 	if challenge == "" {
 		return nil
@@ -279,11 +285,13 @@ func CodeChallengeToOIDC(challenge *domain.OIDCCodeChallenge) *oidc.CodeChalleng
 
 func AMRFromMFAType(mfaType domain.MFAType) string {
 	switch mfaType {
-	case domain.MFATypeOTP:
-		return amrOTP
+	case domain.MFATypeTOTP,
+		domain.MFATypeOTPSMS,
+		domain.MFATypeOTPEmail:
+		return OTP
 	case domain.MFATypeU2F,
 		domain.MFATypeU2FUserVerification:
-		return amrUserPresence
+		return UserPresence
 	default:
 		return ""
 	}
@@ -323,4 +331,8 @@ func (r *RefreshTokenRequest) GetSubject() string {
 
 func (r *RefreshTokenRequest) SetCurrentScopes(scopes []string) {
 	r.Scopes = scopes
+}
+
+func (r *RefreshTokenRequest) GetActor() *oidc.ActorClaims {
+	return actorDomainToClaims(r.Actor)
 }

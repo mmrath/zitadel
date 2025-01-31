@@ -1,16 +1,15 @@
 import { COMMA, ENTER, SPACE } from '@angular/cdk/keycodes';
 import { Location } from '@angular/common';
-import { HttpClient } from '@angular/common/http';
-import { Component, OnDestroy, OnInit } from '@angular/core';
-import { AbstractControl, UntypedFormBuilder, UntypedFormControl, UntypedFormGroup } from '@angular/forms';
+import { Component, OnDestroy, OnInit, signal } from '@angular/core';
+import { AbstractControl, FormControl, UntypedFormBuilder, UntypedFormControl, UntypedFormGroup } from '@angular/forms';
 import { MatCheckboxChange } from '@angular/material/checkbox';
 import { MatDialog } from '@angular/material/dialog';
 import { ActivatedRoute, Router } from '@angular/router';
 import { TranslateService } from '@ngx-translate/core';
 import { Buffer } from 'buffer';
 import { Duration } from 'google-protobuf/google/protobuf/duration_pb';
-import { Subject, Subscription } from 'rxjs';
-import { take } from 'rxjs/operators';
+import { mergeMap, Subject, Subscription } from 'rxjs';
+import { map, take } from 'rxjs/operators';
 import { RadioItemAuthType } from 'src/app/modules/app-radio/app-auth-method-radio/app-auth-method-radio.component';
 import { ChangeType } from 'src/app/modules/changes/changes.component';
 import { InfoSectionType } from 'src/app/modules/info-section/info-section.component';
@@ -22,6 +21,9 @@ import {
   APIConfig,
   App,
   AppState,
+  LoginV1,
+  LoginV2,
+  LoginVersion,
   OIDCAppType,
   OIDCAuthMethodType,
   OIDCConfig,
@@ -41,11 +43,13 @@ import { GrpcAuthService } from 'src/app/services/grpc-auth.service';
 import { ManagementService } from 'src/app/services/mgmt.service';
 import { ToastService } from 'src/app/services/toast.service';
 
+import { EnvironmentService } from 'src/app/services/environment.service';
 import { AppSecretDialogComponent } from '../app-secret-dialog/app-secret-dialog.component';
 import {
   BASIC_AUTH_METHOD,
   CODE_METHOD,
   CUSTOM_METHOD,
+  DEVICE_CODE_METHOD,
   getAuthMethodFromPartialConfig,
   getPartialConfigFromAuthMethod,
   IMPLICIT_METHOD,
@@ -76,9 +80,53 @@ export class AppDetailComponent implements OnInit, OnDestroy {
   public authMethods: RadioItemAuthType[] = [];
   private subscription?: Subscription;
   public projectId: string = '';
+  public appId: string = '';
   public app?: App.AsObject;
 
-  public environmentMap: { [key: string]: string } = {};
+  public apiURLs$ = this.envSvc.env.pipe(
+    mergeMap((env) =>
+      this.wellknownURLs$.pipe(
+        map((wellknown) => {
+          return [
+            ['Issuer', env.issuer],
+            ['Admin Service URL', `${env.api}/admin/v1`],
+            ['Management Service URL', `${env.api}/management/v1`],
+            ['Auth Service URL', `${env.api}/auth/v1`],
+            ...wellknown.filter(
+              ([k, v]) => k === 'Revocation Endpoint' || k === 'JKWS URI' || k === 'Introspection Endpoint',
+            ),
+          ];
+        }),
+      ),
+    ),
+  );
+
+  public issuer$ = this.apiURLs$.pipe(map((urls) => urls.find(([k, v]) => k === 'Issuer')?.[1]));
+
+  public samlURLs$ = this.envSvc.env.pipe(
+    map((env) => {
+      return {
+        samlCertificateURL: `${env.issuer}/saml/v2/certificate`,
+        samlSSO: `${env.issuer}/saml/v2/SSO`,
+        samlSLO: `${env.issuer}/saml/v2/SLO`,
+      };
+    }),
+  );
+
+  public wellknownURLs$ = this.envSvc.wellknown.pipe(
+    map((wellknown) => {
+      return [
+        ['Authorization Endpoint', wellknown.authorization_endpoint],
+        ['Device Authorization Endpoint', wellknown.device_authorization_endpoint],
+        ['End Session Endpoint', wellknown.end_session_endpoint],
+        ['Introspection Endpoint', wellknown.introspection_endpoint],
+        ['JKWS URI', wellknown.jwks_uri],
+        ['Revocation Endpoint', wellknown.revocation_endpoint],
+        ['Token Endpoint', wellknown.token_endpoint],
+        ['Userinfo Endpoint', wellknown.userinfo_endpoint],
+      ];
+    }),
+  );
 
   public oidcResponseTypes: OIDCResponseType[] = [
     OIDCResponseType.OIDC_RESPONSE_TYPE_CODE,
@@ -88,7 +136,9 @@ export class AppDetailComponent implements OnInit, OnDestroy {
   public oidcGrantTypes: OIDCGrantType[] = [
     OIDCGrantType.OIDC_GRANT_TYPE_AUTHORIZATION_CODE,
     OIDCGrantType.OIDC_GRANT_TYPE_IMPLICIT,
+    OIDCGrantType.OIDC_GRANT_TYPE_DEVICE_CODE,
     OIDCGrantType.OIDC_GRANT_TYPE_REFRESH_TOKEN,
+    OIDCGrantType.OIDC_GRANT_TYPE_TOKEN_EXCHANGE,
   ];
   public oidcAppTypes: OIDCAppType[] = [
     OIDCAppType.OIDC_APP_TYPE_WEB,
@@ -134,7 +184,10 @@ export class AppDetailComponent implements OnInit, OnDestroy {
   public settingsList: SidenavSetting[] = [{ id: 'configuration', i18nKey: 'APP.CONFIGURATION' }];
   public currentSetting: string | undefined = this.settingsList[0].id;
 
+  public isNew = signal<boolean>(false);
+
   constructor(
+    private envSvc: EnvironmentService,
     public translate: TranslateService,
     private route: ActivatedRoute,
     private toast: ToastService,
@@ -145,15 +198,17 @@ export class AppDetailComponent implements OnInit, OnDestroy {
     private authService: GrpcAuthService,
     private router: Router,
     private breadcrumbService: BreadcrumbService,
-    private http: HttpClient,
   ) {
     this.oidcForm = this.fb.group({
-      devMode: [{ value: false, disabled: true }, []],
+      devMode: [{ value: false, disabled: true }],
+      skipNativeAppSuccessPage: [{ value: false, disabled: true }],
       clientId: [{ value: '', disabled: true }],
       responseTypesList: [{ value: [], disabled: true }],
       grantTypesList: [{ value: [], disabled: true }],
       appType: [{ value: '', disabled: true }],
       authMethodType: [{ value: '', disabled: true }],
+      loginV2: [{ value: false, disabled: true }],
+      loginV2BaseURL: [{ value: '', disabled: true }],
     });
 
     this.oidcTokenForm = this.fb.group({
@@ -170,16 +225,44 @@ export class AppDetailComponent implements OnInit, OnDestroy {
 
     this.samlForm = this.fb.group({
       metadataUrl: [{ value: '', disabled: true }],
+      entityId: ['', []],
+      acsURL: ['', []],
       metadataXml: [{ value: '', disabled: true }],
     });
 
-    this.http.get('./assets/environment.json').subscribe((env: any) => {
-      this.environmentMap = {
-        issuer: env.issuer,
-        adminServiceUrl: env.api,
-        mgmtServiceUrl: env.api,
-        authServiceUrl: env.api,
-      };
+    this.samlForm.valueChanges.subscribe(() => {
+      if (!this.app) {
+        this.app = new App().toObject();
+      }
+
+      let minimalMetadata =
+        this.entityId?.value && this.acsURL?.value
+          ? `<?xml version="1.0"?>
+<md:EntityDescriptor xmlns:md="urn:oasis:names:tc:SAML:2.0:metadata" entityID="${this.entityId?.value}">
+    <md:SPSSODescriptor protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol urn:oasis:names:tc:SAML:1.1:protocol">
+        <md:AssertionConsumerService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" Location="${this.acsURL?.value}" index="0"/>
+    </md:SPSSODescriptor>
+</md:EntityDescriptor>`
+          : '';
+
+      if (!minimalMetadata && !this.metadataUrl?.value) {
+        return;
+      }
+
+      if (!this.app.samlConfig) {
+        this.app.samlConfig = new SAMLConfig().toObject();
+      }
+
+      if (minimalMetadata) {
+        const base64 = Buffer.from(minimalMetadata, 'utf-8').toString('base64');
+        this.app.samlConfig.metadataXml = base64;
+        this.app.samlConfig.metadataUrl = '';
+      }
+
+      if (this.metadataUrl?.value) {
+        this.app.samlConfig.metadataXml = '';
+        this.app.samlConfig.metadataUrl = this.metadataUrl?.value;
+      }
     });
   }
 
@@ -213,9 +296,13 @@ export class AppDetailComponent implements OnInit, OnDestroy {
   public ngOnInit(): void {
     const projectId = this.route.snapshot.paramMap.get('projectid');
     const appId = this.route.snapshot.paramMap.get('appid');
+    const isNew = this.route.snapshot.queryParamMap.get('new');
+
+    this.isNew.set(isNew === 'true');
 
     if (projectId && appId) {
       this.projectId = projectId;
+      this.appId = appId;
       this.getData(projectId, appId);
     }
   }
@@ -238,6 +325,15 @@ export class AppDetailComponent implements OnInit, OnDestroy {
           .then((app) => {
             if (app.app) {
               this.app = app.app;
+
+              // TODO: duplicates should be handled in the API
+              if (this.app.oidcConfig?.complianceProblemsList && this.app.oidcConfig?.complianceProblemsList.length) {
+                this.app.oidcConfig.complianceProblemsList = this.app.oidcConfig?.complianceProblemsList.filter(
+                  (element, index) => {
+                    return this.app?.oidcConfig?.complianceProblemsList.findIndex((e) => e.key === element.key) === index;
+                  },
+                );
+              }
 
               const breadcrumbs = [
                 new Breadcrumb({
@@ -262,13 +358,24 @@ export class AppDetailComponent implements OnInit, OnDestroy {
               if (this.app.oidcConfig) {
                 this.getAuthMethodOptions('OIDC');
 
-                this.settingsList = [
-                  { id: 'configuration', i18nKey: 'APP.CONFIGURATION' },
-                  { id: 'token', i18nKey: 'APP.TOKEN' },
-                  { id: 'redirect-uris', i18nKey: 'APP.OIDC.REDIRECTSECTIONTITLE' },
-                  { id: 'additional-origins', i18nKey: 'APP.ADDITIONALORIGINS' },
-                  { id: 'urls', i18nKey: 'APP.URLS' },
-                ];
+                if (
+                  this.app.oidcConfig.grantTypesList.length === 1 &&
+                  this.app.oidcConfig.grantTypesList[0] === OIDCGrantType.OIDC_GRANT_TYPE_DEVICE_CODE
+                ) {
+                  this.settingsList = [
+                    { id: 'configuration', i18nKey: 'APP.CONFIGURATION' },
+                    { id: 'token', i18nKey: 'APP.TOKEN' },
+                    { id: 'urls', i18nKey: 'APP.URLS' },
+                  ];
+                } else {
+                  this.settingsList = [
+                    { id: 'configuration', i18nKey: 'APP.CONFIGURATION' },
+                    { id: 'token', i18nKey: 'APP.TOKEN' },
+                    { id: 'redirect-uris', i18nKey: 'APP.OIDC.REDIRECTSECTIONTITLE' },
+                    { id: 'additional-origins', i18nKey: 'APP.ADDITIONALORIGINS' },
+                    { id: 'urls', i18nKey: 'APP.URLS' },
+                  ];
+                }
 
                 this.initialAuthMethod = this.authMethodFromPartialConfig({ oidc: this.app.oidcConfig });
                 this.currentAuthMethod = this.initialAuthMethod;
@@ -302,7 +409,10 @@ export class AppDetailComponent implements OnInit, OnDestroy {
                   this.authMethods = this.authMethods.filter((element) => element !== CUSTOM_METHOD);
                 }
               } else if (this.app.samlConfig) {
-                this.settingsList = [{ id: 'configuration', i18nKey: 'APP.CONFIGURATION' }];
+                this.settingsList = [
+                  { id: 'configuration', i18nKey: 'APP.CONFIGURATION' },
+                  { id: 'urls', i18nKey: 'APP.URLS' },
+                ];
               }
 
               if (allowed) {
@@ -325,6 +435,12 @@ export class AppDetailComponent implements OnInit, OnDestroy {
               if (this.app.oidcConfig?.clockSkew) {
                 const inSecs = this.app.oidcConfig?.clockSkew.seconds + this.app.oidcConfig?.clockSkew.nanos / 100000;
                 this.oidcTokenForm.controls['clockSkewSeconds'].setValue(inSecs);
+              }
+              if (this.app.oidcConfig?.loginVersion?.loginV1) {
+                this.oidcForm.controls['loginV2'].setValue(false);
+              } else if (this.app.oidcConfig?.loginVersion?.loginV2) {
+                this.oidcForm.controls['loginV2'].setValue(true);
+                this.oidcForm.controls['loginV2BaseURL'].setValue(this.app.oidcConfig.loginVersion.loginV2.baseUri);
               }
               if (this.app.oidcConfig) {
                 this.oidcForm.patchValue(this.app.oidcConfig);
@@ -369,7 +485,7 @@ export class AppDetailComponent implements OnInit, OnDestroy {
     if (type === 'OIDC') {
       switch (this.app?.oidcConfig?.appType) {
         case OIDCAppType.OIDC_APP_TYPE_NATIVE:
-          this.authMethods = [PKCE_METHOD, CUSTOM_METHOD];
+          this.authMethods = [PKCE_METHOD, DEVICE_CODE_METHOD, CUSTOM_METHOD];
           break;
         case OIDCAppType.OIDC_APP_TYPE_WEB:
           this.authMethods = [PKCE_METHOD, CODE_METHOD, PK_JWT_METHOD, POST_METHOD];
@@ -391,6 +507,8 @@ export class AppDetailComponent implements OnInit, OnDestroy {
         this.toast.showInfo('POLICY.PRIVATELABELING.MAXSIZEEXCEEDED', true);
       } else {
         this.metadataUrl?.setValue('');
+        this.entityId?.setValue('');
+        this.acsURL?.setValue('');
         const reader = new FileReader();
         reader.onload = ((aXML) => {
           return (e) => {
@@ -537,7 +655,8 @@ export class AppDetailComponent implements OnInit, OnDestroy {
         this.app.oidcConfig.redirectUrisList = this.redirectUrisList;
         this.app.oidcConfig.postLogoutRedirectUrisList = this.postLogoutRedirectUrisList;
         this.app.oidcConfig.additionalOriginsList = this.additionalOriginsList;
-        this.app.oidcConfig.devMode = this.devMode?.value;
+        this.app.oidcConfig.devMode = !!this.devMode?.value;
+        this.app.oidcConfig.skipNativeAppSuccessPage = !!this.skipNativeAppSuccessPage?.value;
 
         const req = new UpdateOIDCAppConfigRequest();
         req.setProjectId(this.projectId);
@@ -548,6 +667,15 @@ export class AppDetailComponent implements OnInit, OnDestroy {
         req.setAuthMethodType(this.app.oidcConfig.authMethodType);
         req.setGrantTypesList(this.app.oidcConfig.grantTypesList);
         req.setAppType(this.app.oidcConfig.appType);
+        const login = new LoginVersion();
+        if (this.loginV2?.value) {
+          const loginV2 = new LoginV2();
+          loginV2.setBaseUri(this.loginV2BaseURL?.value);
+          login.setLoginV2(loginV2);
+        } else {
+          login.setLoginV1(new LoginV1());
+        }
+        req.setLoginVersion(login);
 
         // token
         req.setAccessTokenType(this.app.oidcConfig.accessTokenType);
@@ -560,6 +688,7 @@ export class AppDetailComponent implements OnInit, OnDestroy {
         req.setAdditionalOriginsList(this.app.oidcConfig.additionalOriginsList);
         req.setPostLogoutRedirectUrisList(this.app.oidcConfig.postLogoutRedirectUrisList);
         req.setDevMode(this.app.oidcConfig.devMode);
+        req.setSkipNativeAppSuccessPage(this.app.oidcConfig.skipNativeAppSuccessPage);
 
         if (this.clockSkewSeconds?.value) {
           const dur = new Duration();
@@ -576,6 +705,9 @@ export class AppDetailComponent implements OnInit, OnDestroy {
               this.currentAuthMethod = this.authMethodFromPartialConfig(config);
             }
             this.toast.showInfo('APP.TOAST.OIDCUPDATED', true);
+            setTimeout(() => {
+              this.getData(this.projectId, this.appId);
+            }, 1000);
           })
           .catch((error) => {
             this.toast.showError(error);
@@ -625,8 +757,10 @@ export class AppDetailComponent implements OnInit, OnDestroy {
       req.setProjectId(this.projectId);
       req.setAppId(this.app.id);
 
-      if (this.app.samlConfig) {
+      if (this.app.samlConfig?.metadataUrl.length > 0) {
         req.setMetadataUrl(this.app.samlConfig?.metadataUrl);
+      }
+      if (this.app.samlConfig?.metadataXml.length > 0) {
         req.setMetadataXml(this.app.samlConfig?.metadataXml);
       }
 
@@ -726,12 +860,24 @@ export class AppDetailComponent implements OnInit, OnDestroy {
     return this.oidcForm.get('authMethodType');
   }
 
-  public get apiAuthMethodType(): AbstractControl | null {
-    return this.apiForm.get('authMethodType');
+  public get loginV2(): FormControl<boolean> | null {
+    return this.oidcForm.get('loginV2') as FormControl<boolean>;
   }
 
-  public get devMode(): UntypedFormControl | null {
-    return this.oidcForm.get('devMode') as UntypedFormControl;
+  public get loginV2BaseURL(): AbstractControl | null {
+    return this.oidcForm.get('loginV2BaseURL');
+  }
+
+  public get apiAuthMethodType(): AbstractControl | null {
+    return this.apiForm.get('authMethodType') as UntypedFormControl;
+  }
+
+  public get devMode(): FormControl<boolean> | null {
+    return this.oidcForm.get('devMode') as FormControl<boolean>;
+  }
+
+  public get skipNativeAppSuccessPage(): FormControl<boolean> | null {
+    return this.oidcForm.get('skipNativeAppSuccessPage') as FormControl<boolean>;
   }
 
   public get accessTokenType(): AbstractControl | null {
@@ -758,6 +904,14 @@ export class AppDetailComponent implements OnInit, OnDestroy {
     return this.samlForm.get('metadataUrl');
   }
 
+  public get entityId(): AbstractControl | null {
+    return this.samlForm.get('entityId');
+  }
+
+  public get acsURL(): AbstractControl | null {
+    return this.samlForm.get('acsURL');
+  }
+
   get decodedBase64(): string {
     if (
       this.app &&
@@ -765,7 +919,7 @@ export class AppDetailComponent implements OnInit, OnDestroy {
       this.app.samlConfig.metadataXml &&
       typeof this.app.samlConfig.metadataXml === 'string'
     ) {
-      return Buffer.from(this.app?.samlConfig.metadataXml, 'base64').toString('ascii');
+      return Buffer.from(this.app?.samlConfig.metadataXml, 'base64').toString('utf-8');
     } else {
       return '';
     }
@@ -773,7 +927,7 @@ export class AppDetailComponent implements OnInit, OnDestroy {
 
   set decodedBase64(xmlString: string) {
     if (this.app && this.app.samlConfig && this.app.samlConfig.metadataXml) {
-      const base64 = Buffer.from(xmlString, 'ascii').toString('base64');
+      const base64 = Buffer.from(xmlString, 'utf-8').toString('base64');
 
       if (this.app.samlConfig) {
         this.app.samlConfig.metadataXml = base64;

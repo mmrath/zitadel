@@ -110,8 +110,6 @@
             <ng-template
               cdkConnectedOverlay
               [cdkConnectedOverlayOrigin]="trigger"
-              [flexibleDimensions]="true"
-              [lockPosition]="true"
               [cdkConnectedOverlayOffsetY]="10"
               [cdkConnectedOverlayHasBackdrop]="true"
               [cdkConnectedOverlayPositions]="positions"
@@ -170,36 +168,44 @@
 
     <span class="fill-space"></span>
 
-    <a class="doc-link" href="https://docs.zitadel.com" mat-stroked-button target="_blank">
-      {{ 'MENU.DOCUMENTATION' | translate }}
-    </a>
+    <ng-container *ngIf="authService.privacypolicy | async as pP">
+      <a class="custom-link" *ngIf="pP.customLink" href="{{ pP.customLink }}" mat-stroked-button target="_blank">
+        {{ pP.customLinkText }}
+      </a>
+
+      <a class="doc-link" *ngIf="pP.docsLink" href="{{ pP.docsLink }}" mat-stroked-button target="_blank">
+        {{ 'MENU.DOCUMENTATION' | translate }}
+      </a>
+    </ng-container>
 
     <div class="system-rel" *ngIf="!isOnMe">
       <a
         id="systembutton"
         *ngIf="!isOnInstance && (['iam.read$', 'iam.write$'] | hasRole | async)"
         [routerLink]="['/instance']"
-        class="iam-settings cnsl-action-button"
+        class="iam-settings"
         mat-stroked-button
       >
-        <span class="iam-label">{{ 'MENU.INSTANCE' | translate }}</span>
-        <i class="las la-cog"></i>
+        <div class="cnsl-action-button">
+          <span class="iam-label">{{ 'MENU.INSTANCE' | translate }}</span>
+          <i class="las la-cog"></i>
+        </div>
       </a>
       <a
         id="orgbutton"
         *ngIf="isOnInstance && (['org.read'] | hasRole | async)"
         [routerLink]="['/org']"
-        class="org-settings cnsl-action-button"
+        class="org-settings"
         mat-stroked-button
       >
-        <span class="iam-label">{{ 'MENU.ORGANIZATION' | translate }}</span>
-        <i class="las la-cog"></i>
+        <div class="cnsl-action-button">
+          <span class="iam-label">{{ 'MENU.ORGANIZATION' | translate }}</span>
+          <i class="las la-cog"></i>
+        </div>
       </a>
     </div>
 
-    <ng-container
-      *ngIf="user && (user.human?.profile?.displayName || (user.human?.profile?.firstName && user.human?.profile?.lastName))"
-    >
+    <ng-container *ngIf="user && user.id">
       <div class="account-card-wrapper">
         <button
           cdkOverlayOrigin
@@ -214,11 +220,7 @@
             [active]="showAccount"
             [avatarUrl]="user.human?.profile?.avatarUrl || ''"
             [forColor]="user.preferredLoginName || ''"
-            [name]="
-              user.human?.profile?.displayName
-                ? user.human?.profile?.displayName ?? ''
-                : user.human?.profile?.firstName + ' ' + user.human?.profile?.lastName
-            "
+            [name]="user.human?.profile?.displayName ?? ''"
             [size]="38"
           >
           </cnsl-avatar>
@@ -227,8 +229,6 @@
       <ng-template
         cdkConnectedOverlay
         [cdkConnectedOverlayOrigin]="accounttrigger"
-        [flexibleDimensions]="true"
-        [lockPosition]="true"
         [cdkConnectedOverlayOffsetY]="10"
         [cdkConnectedOverlayHasBackdrop]="true"
         [cdkConnectedOverlayPositions]="accountCardPositions"
@@ -238,7 +238,6 @@
         (detach)="showAccount = false"
       >
         <cnsl-accounts-card
-          @accounts
           class="a_card"
           *ngIf="showAccount"
           (closedCard)="showAccount = false"

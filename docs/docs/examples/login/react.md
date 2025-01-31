@@ -1,117 +1,120 @@
 ---
-title: React
+title: ZITADEL with React
+sidebar_label: React
 ---
 
-This Integration guide shows you the recommended way to integrate **ZITADEL** into your React Application.
-It demonstrates how to add a user login to your application and fetch some data from the user info endpoint.
+This integration guide demonstrates the recommended way to incorporate ZITADEL into your React application.
+It explains how to enable user login in your application and how to fetch data from the user info endpoint.
 
-At the end of the guide you should have an application able to login a user and read the user profile.
+By the end of this guide, your application will have login functionality and will be able to access the current user's profile.
 
-## Setup Application and get Keys
+:::tip
+This documentation references our [example](https://github.com/zitadel/zitadel-react) on GitHub.
+It also uses the @zitadel/react package with its default configuration.
+:::
 
-Before we can start building our application we have to do a few configuration steps in ZITADEL Console.
-You will need to provide some information about your app. We recommend creating a new app to start from scratch. Navigate to your Project and add a new application at the top of the page.
-Select User Agent and continue. More about the different app types can you find [here](../../guides/integrate/oauth-recommended-flows#different-client-profiles).
-We recommend that you use [Authorization Code](../../apis/openidoauth/grant-types#authorization-code) in combination with [Proof Key for Code Exchange](../../apis/openidoauth/grant-types#proof-key-for-code-exchange) for all web applications.
+## Set up application and obtain keys
 
-### Redirect URLs
+Before we begin developing our application, we need to perform a few configuration steps in the ZITADEL Console.
+You'll need to provide some information about your app.
+We recommend creating a new app to start from scratch.
+Navigate to your project, then add a new application at the top of the page.
+Select the **User Agent** application type and continue.
+We recommend that you use [Proof Key for Code Exchange (PKCE)](/apis/openidoauth/grant-types#proof-key-for-code-exchange) for all single page applications.
 
-A redirect URL is a URL in your application where ZITADEL redirects the user after they have authenticated. Set your url to the domain the app will be deployed to or use `http://localhost:3000/` because this will be the default of npm.
+![Create app in console](/img/react/app-create.png)
 
-> You should set dev mode to `true` as this will enable unsecure http for the moment.
+### Redirect URIs
 
-If you want to redirect the users back to a route on your application after they have logged out, add an optional redirect in the post redirectURI field.
+The redirect URIs field tells ZITADEL where it's allowed to redirect users after authentication. For development, you can set dev mode to `true` to enable insecure HTTP and redirect to a `localhost` URI.
+The post logout redirect sends your users back to a public route on your application after they have logged out.
 
-Continue and Create the application.
+:::tip
+If you are following along with the [example](https://github.com/zitadel/zitadel-react), set the dev mode switch to `true`.
+Configure a redirect URIs to \http://localhost:3000/callback and a post redirect URI to \http://localhost:3000/.
+:::
 
-### Client ID
+Continue and create the application.
 
-After successful app creation a popup will appear showing you your clientID.
-Copy your client ID as it will be needed in the next step.
+### Copy Client ID
 
-## React Setup
+After successful creation of the app, make sure copy the client ID, as you will need it to configure your React client.
 
-### Create React app
+## Create a project role "admin" and assign it to your user
 
-Create a new React app with the following command
+Also note the projects resource ID, as you will need it to configure your React client.
 
-```bash
-npx create-react-app my-app
-```
+![Create project role "admin"](/img/react/project-role.png)
 
-### Install oidc client
+![Assign the "admin" role to your user](/img/react/project-authz.png)
 
-You need to install an oauth / oidc client to connect with ZITADEL. Run the following command:
+If you want to read your users roles from user info endpoint, make sure to enable the checkbox in your project.
 
-```bash
-npm install oidc-react
-```
+## React setup
 
-This library helps integrating ZITADEL Authentication in your React Application.
+Now that you have configured your web application on the ZITADEL side, you can proceed with the integration of your React client.
 
-### Create and configure Auth Module
+### Install React dependencies
 
-With the installed oidc pakage you will need an AuthProvider which should contain the OIDC configuration.
-
-The oidc configuration should contain **openid**, **profile** and **email** as scope and **code** as responseType.
-In the code below make sure to change the issuer to your instance url. You can find this in the ZITADEL Console on you application.
-Replace the clientId value 'YOUR-CLIENT-ID' with the generated client id of you application in ZITADEL Console.
-
-```ts
-import React from "react";
-import { AuthProvider } from "oidc-react";
-import "./App.css";
-const oidcConfig = {
-  onSignIn: async (response: any) => {
-    alert(
-      "You logged in :" +
-        response.profile.given_name +
-        " " +
-        response.profile.family_name
-    );
-    window.location.hash = "";
-  },
-  authority: "https:/[your-domain]-[random-string].zitadel.cloud", // replace with your instance
-  clientId: "YOUR-CLIENT-ID",
-  responseType: "code",
-  redirectUri: "http://localhost:3000/",
-  scope: "openid profile email",
-};
-
-function App() {
-  return (
-    <AuthProvider {...oidcConfig}>
-      <div className="App">
-        <header className="App-header">
-          <p>Hello World</p>
-        </header>
-      </div>
-    </AuthProvider>
-  );
-}
-
-export default App;
-```
-
-### Run application
-
-Start your react application with the following command
+To conveniently connect with ZITADEL, you can install the [@zitadel/react NPM package](https://www.npmjs.com/package/@zitadel/react). Run the following command:
 
 ```bash
-npm start
+yarn add @zitadel/react
 ```
 
-Your browser should automatically open the app site or just go to `http://localhost:3000/`.
-On opening the app in the browser you will be redirected to the login of your instance.
-After successfully authenticating your user, you will get back to you application.
-It should show a popup which says: **You logged in {FirstName} {LastName}**
+### Create and configure the auth service
+
+The @zitadel/react package provides a `createZitadelAuth()` function which sets some defaults and initializes the underlying [oidc-client-ts](https://github.com/authts/oidc-client-ts) `UserManager` class.
+You can overwrite all the defaults with the aguments you pass to `createZitadelAuth()`.
+
+Export the object returned from `createZitadelAuth()`
+
+### Initialize user manager
+
+```ts reference
+https://github.com/zitadel/zitadel-react/blob/main/src/App.tsx
+```
+
+### Add two new components to your application
+
+First, add the component which prompts the user to login.
+
+```ts reference
+https://github.com/zitadel/zitadel-react/blob/main/src/components/Login.tsx
+```
+
+Then create the component for the page where the users will be redirected.
+It loads the user info endpoint once the code flow completes and prints all the information.
+
+```ts reference
+https://github.com/zitadel/zitadel-react/blob/main/src/components/Callback.tsx
+```
+
+You can now read a user's role to show protected areas of the application.
+
+### Run
+
+Finally, you can start your application by running the following:
+
+```
+yarn start
+```
 
 ## Completion
 
-You have successfully integrated ZITADEL in your React Application!
+Congratulations! You have successfully integrated your React application with ZITADEL!
 
-### Whats next?
+If you get stuck, consider checking out the [ZITADEL React example application](https://github.com/zitadel/zitadel-react).
+This application includes all the functionalities mentioned in this quickstart.
+You can start by cloning the repository and changing the arguments to `createZitadelAuth` to fit your requirements.
+If you face issues, contact us or [raise an issue on GitHub](https://github.com/zitadel/zitadel-react/issues).
 
-Now you can proceed implementing our APIs to include Authorization. You can find our API Docs [here](../../apis/introduction)
+![App in console](/img/react/app-screen.png)
 
-For more information about creating a React application we refer to [React](https://reactjs.org/docs/getting-started.html) and for more information about the used oauth/oidc library consider reading their docs at [oidc-react](https://www.npmjs.com/package/oidc-react).
+### What's next?
+
+Now that you have enabled authentication, you are ready to add authorization to your application by using ZITADEL APIs.
+To do this, [refer to the API docs](/apis/introduction) or check out [the ZITADEL Console code on GitHub](https://github.com/zitadel/zitadel) which uses gRPC to access data.
+
+For more information on how to create a React application, you can refer to [Create React App](https://github.com/facebook/create-react-app).
+If you want to learn more about the libraries wrapped by [@zitadel/react](https://www.npmjs.com/package/@zitadel/react), read the docs for [oidc-client-ts](https://github.com/authts/oidc-client-ts).

@@ -8,10 +8,11 @@ import (
 	sq "github.com/Masterminds/squirrel"
 
 	"github.com/zitadel/zitadel/internal/api/authz"
+	"github.com/zitadel/zitadel/internal/api/call"
 	"github.com/zitadel/zitadel/internal/crypto"
-	"github.com/zitadel/zitadel/internal/domain"
-	"github.com/zitadel/zitadel/internal/errors"
 	"github.com/zitadel/zitadel/internal/query/projection"
+	"github.com/zitadel/zitadel/internal/telemetry/tracing"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 type Certificate interface {
@@ -64,8 +65,11 @@ var (
 	}
 )
 
-func (q *Queries) ActiveCertificates(ctx context.Context, t time.Time, usage domain.KeyUsage) (*Certificates, error) {
-	query, scan := prepareCertificateQuery()
+func (q *Queries) ActiveCertificates(ctx context.Context, t time.Time, usage crypto.KeyUsage) (certs *Certificates, err error) {
+	ctx, span := tracing.NewSpan(ctx)
+	defer func() { span.EndWithError(err) }()
+
+	query, scan := prepareCertificateQuery(ctx, q.client)
 	if t.IsZero() {
 		t = time.Now()
 	}
@@ -75,33 +79,30 @@ func (q *Queries) ActiveCertificates(ctx context.Context, t time.Time, usage dom
 				KeyColInstanceID.identifier(): authz.GetInstance(ctx).InstanceID(),
 				KeyColUse.identifier():        usage,
 			},
-			sq.Gt{
-				CertificateColExpiry.identifier(): t,
-			},
-			sq.Gt{
-				KeyPrivateColExpiry.identifier(): t,
-			},
-		}).OrderBy(KeyPrivateColExpiry.identifier()).ToSql()
+			sq.Gt{CertificateColExpiry.identifier(): t},
+			sq.Gt{KeyPrivateColExpiry.identifier(): t},
+		},
+	).OrderBy(KeyPrivateColExpiry.identifier()).ToSql()
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "QUERY-SDfkg", "Errors.Query.SQLStatement")
+		return nil, zerrors.ThrowInternal(err, "QUERY-SDfkg", "Errors.Query.SQLStatement")
 	}
 
-	rows, err := q.client.QueryContext(ctx, stmt, args...)
+	err = q.client.QueryContext(ctx, func(rows *sql.Rows) error {
+		certs, err = scan(rows)
+		return err
+	}, stmt, args...)
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "QUERY-Sgan4", "Errors.Internal")
+		return nil, zerrors.ThrowInternal(err, "QUERY-Sgan4", "Errors.Internal")
 	}
-	keys, err := scan(rows)
-	if err != nil {
-		return nil, err
+
+	certs.State, err = q.latestState(ctx, keyTable)
+	if !zerrors.IsNotFound(err) {
+		return certs, err
 	}
-	keys.LatestSequence, err = q.latestSequence(ctx, keyTable)
-	if !errors.IsNotFound(err) {
-		return keys, err
-	}
-	return keys, nil
+	return certs, nil
 }
 
-func prepareCertificateQuery() (sq.SelectBuilder, func(*sql.Rows) (*Certificates, error)) {
+func prepareCertificateQuery(ctx context.Context, db prepareDatabase) (sq.SelectBuilder, func(*sql.Rows) (*Certificates, error)) {
 	return sq.Select(
 			KeyColID.identifier(),
 			KeyColCreationDate.identifier(),
@@ -116,7 +117,7 @@ func prepareCertificateQuery() (sq.SelectBuilder, func(*sql.Rows) (*Certificates
 			countColumn.identifier(),
 		).From(keyTable.identifier()).
 			LeftJoin(join(CertificateColID, KeyColID)).
-			LeftJoin(join(KeyPrivateColID, KeyColID)).
+			LeftJoin(join(KeyPrivateColID, KeyColID) + db.Timetravel(call.Took(ctx))).
 			PlaceholderFormat(sq.Dollar),
 		func(rows *sql.Rows) (*Certificates, error) {
 			certificates := make([]Certificate, 0)
@@ -144,7 +145,7 @@ func prepareCertificateQuery() (sq.SelectBuilder, func(*sql.Rows) (*Certificates
 			}
 
 			if err := rows.Close(); err != nil {
-				return nil, errors.ThrowInternal(err, "QUERY-rKd6k", "Errors.Query.CloseRows")
+				return nil, zerrors.ThrowInternal(err, "QUERY-rKd6k", "Errors.Query.CloseRows")
 			}
 
 			return &Certificates{
