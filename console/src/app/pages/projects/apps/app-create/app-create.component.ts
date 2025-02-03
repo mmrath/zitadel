@@ -2,20 +2,20 @@ import { COMMA, ENTER, SPACE } from '@angular/cdk/keycodes';
 import { StepperSelectionEvent } from '@angular/cdk/stepper';
 import { Location } from '@angular/common';
 import { Component, OnDestroy, OnInit } from '@angular/core';
-import { AbstractControl, UntypedFormBuilder, UntypedFormControl, UntypedFormGroup, Validators } from '@angular/forms';
+import { AbstractControl, UntypedFormBuilder, UntypedFormControl, UntypedFormGroup } from '@angular/forms';
 import { MatDialog } from '@angular/material/dialog';
 import { ActivatedRoute, Params, Router } from '@angular/router';
 import { Buffer } from 'buffer';
 import { Subject, Subscription } from 'rxjs';
-import { debounceTime, takeUntil } from 'rxjs/operators';
+import { debounceTime, map, takeUntil } from 'rxjs/operators';
 import { RadioItemAuthType } from 'src/app/modules/app-radio/app-auth-method-radio/app-auth-method-radio.component';
+import { requiredValidator } from 'src/app/modules/form-field/validators/validators';
 import {
   APIAuthMethodType,
   OIDCAppType,
   OIDCAuthMethodType,
   OIDCGrantType,
   OIDCResponseType,
-  SAMLConfig,
 } from 'src/app/proto/generated/zitadel/app_pb';
 import {
   AddAPIAppRequest,
@@ -32,13 +32,15 @@ import { AppSecretDialogComponent } from '../app-secret-dialog/app-secret-dialog
 import {
   BASIC_AUTH_METHOD,
   CODE_METHOD,
+  DEVICE_CODE_METHOD,
   getPartialConfigFromAuthMethod,
   IMPLICIT_METHOD,
-  PK_JWT_METHOD,
   PKCE_METHOD,
+  PK_JWT_METHOD,
   POST_METHOD,
 } from '../authmethods';
 import { API_TYPE, AppCreateType, NATIVE_TYPE, RadioItemAppType, SAML_TYPE, USER_AGENT_TYPE, WEB_TYPE } from '../authtypes';
+import { EnvironmentService } from 'src/app/services/environment.service';
 
 const MAX_ALLOWED_SIZE = 1 * 1024 * 1024;
 
@@ -50,7 +52,7 @@ const MAX_ALLOWED_SIZE = 1 * 1024 * 1024;
 export class AppCreateComponent implements OnInit, OnDestroy {
   private subscription: Subscription = new Subscription();
   private destroyed$: Subject<void> = new Subject();
-  public devmode: boolean = false;
+  public pro: boolean = false;
   public projectId: string = '';
   public loading: boolean = false;
 
@@ -111,12 +113,14 @@ export class AppCreateComponent implements OnInit, OnDestroy {
   }[] = [
     { type: OIDCGrantType.OIDC_GRANT_TYPE_AUTHORIZATION_CODE, checked: true, disabled: false },
     { type: OIDCGrantType.OIDC_GRANT_TYPE_IMPLICIT, checked: false, disabled: true },
-    // { type: OIDCGrantType.OIDCGRANTTYPE_REFRESH_TOKEN, checked: false, disabled: true },
-    // TODO show when implemented
+    { type: OIDCGrantType.OIDC_GRANT_TYPE_REFRESH_TOKEN, checked: false, disabled: true },
+    { type: OIDCGrantType.OIDC_GRANT_TYPE_DEVICE_CODE, checked: false, disabled: true },
+    { type: OIDCGrantType.OIDC_GRANT_TYPE_TOKEN_EXCHANGE, checked: false, disabled: true },
   ];
 
   public readonly separatorKeysCodes: number[] = [ENTER, COMMA, SPACE];
   public requestRedirectValuesSubject$: Subject<void> = new Subject();
+  public samlCertificateURL$ = this.envSvc.env.pipe(map((env) => `${env.issuer}/saml/v2/certificate`));
 
   constructor(
     private router: Router,
@@ -127,10 +131,11 @@ export class AppCreateComponent implements OnInit, OnDestroy {
     private fb: UntypedFormBuilder,
     private _location: Location,
     private breadcrumbService: BreadcrumbService,
+    private envSvc: EnvironmentService,
   ) {
     this.form = this.fb.group({
-      name: ['', [Validators.required]],
-      appType: ['', [Validators.required]],
+      name: ['', [requiredValidator]],
+      appType: ['', [requiredValidator]],
       // apptype OIDC
       responseTypesList: ['', []],
       grantTypesList: ['', []],
@@ -142,12 +147,14 @@ export class AppCreateComponent implements OnInit, OnDestroy {
     this.initForm();
 
     this.firstFormGroup = this.fb.group({
-      name: ['', [Validators.required]],
-      appType: [WEB_TYPE, [Validators.required]],
+      name: ['', [requiredValidator]],
+      appType: [WEB_TYPE, [requiredValidator]],
     });
 
     this.samlConfigForm = this.fb.group({
       metadataUrl: ['', []],
+      entityId: ['', []],
+      acsURL: ['', []],
     });
 
     this.firstFormGroup.valueChanges.subscribe((value) => {
@@ -164,7 +171,7 @@ export class AppCreateComponent implements OnInit, OnDestroy {
 
           switch (this.appType?.value.oidcAppType) {
             case OIDCAppType.OIDC_APP_TYPE_NATIVE:
-              this.authMethods = [PKCE_METHOD];
+              this.authMethods = [PKCE_METHOD, DEVICE_CODE_METHOD];
 
               // automatically set to PKCE and skip step
               this.oidcAppRequest.setResponseTypesList([OIDCResponseType.OIDC_RESPONSE_TYPE_CODE]);
@@ -194,7 +201,7 @@ export class AppCreateComponent implements OnInit, OnDestroy {
     });
 
     this.secondFormGroup = this.fb.group({
-      authMethod: [this.authMethods[0].key, [Validators.required]],
+      authMethod: [this.authMethods[0].key, [requiredValidator]],
     });
 
     this.secondFormGroup.valueChanges.subscribe((form) => {
@@ -216,13 +223,53 @@ export class AppCreateComponent implements OnInit, OnDestroy {
     });
 
     this.samlConfigForm.valueChanges.subscribe((form) => {
+      let minimalMetadata =
+        this.entityId?.value && this.acsURL?.value
+          ? `<?xml version="1.0"?>
+<md:EntityDescriptor xmlns:md="urn:oasis:names:tc:SAML:2.0:metadata" entityID="${this.entityId?.value}">
+    <md:SPSSODescriptor protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol urn:oasis:names:tc:SAML:1.1:protocol">
+        <md:AssertionConsumerService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" Location="${this.acsURL?.value}" index="0"/>
+    </md:SPSSODescriptor>
+</md:EntityDescriptor>`
+          : '';
+
       if (form.metadataUrl && form.metadataUrl.length > 0) {
         this.samlAppRequest.setMetadataUrl(form.metadataUrl);
+      }
+
+      if (this.samlAppRequest && minimalMetadata.length > 0) {
+        const base64 = Buffer.from(minimalMetadata, 'utf-8').toString('base64');
+        this.samlAppRequest.setMetadataXml(base64);
       }
     });
   }
 
+  public get redirectUris() {
+    return this.oidcAppRequest.toObject().redirectUrisList;
+  }
+
+  public set redirectUris(value: string[]) {
+    this.oidcAppRequest.setRedirectUrisList(value);
+  }
+
+  public get postLogoutUrisList() {
+    return this.oidcAppRequest.toObject().postLogoutRedirectUrisList;
+  }
+
+  public set postLogoutUrisList(value: string[]) {
+    this.oidcAppRequest.setPostLogoutRedirectUrisList(value);
+  }
+
+  public get devMode() {
+    return this.oidcAppRequest.toObject().devMode;
+  }
+
+  public set devMode(value: boolean) {
+    this.oidcAppRequest.setDevMode(value);
+  }
+
   public ngOnInit(): void {
+    this.devMode = false;
     this.subscription = this.route.params.subscribe((params) => this.getData(params));
 
     const projectId = this.route.snapshot.paramMap.get('projectid');
@@ -278,8 +325,8 @@ export class AppCreateComponent implements OnInit, OnDestroy {
 
   public setDevFormValidators(): void {
     if (this.isDevOIDC) {
-      const grantTypesControl = new UntypedFormControl('', [Validators.required]);
-      const responseTypesControl = new UntypedFormControl('', [Validators.required]);
+      const grantTypesControl = new UntypedFormControl('', [requiredValidator]);
+      const responseTypesControl = new UntypedFormControl('', [requiredValidator]);
 
       this.form.addControl('grantTypesList', grantTypesControl);
       this.form.addControl('responseTypesList', responseTypesControl);
@@ -325,6 +372,8 @@ export class AppCreateComponent implements OnInit, OnDestroy {
   public onDropXML(filelist: FileList): void {
     const file = filelist.item(0);
     this.metadataUrl?.setValue('');
+    this.entityId?.setValue('');
+    this.acsURL?.setValue('');
     if (file) {
       if (file.size > MAX_ALLOWED_SIZE) {
         this.toast.showInfo('POLICY.PRIVATELABELING.MAXSIZEEXCEEDED', true);
@@ -345,9 +394,9 @@ export class AppCreateComponent implements OnInit, OnDestroy {
   }
 
   public createApp(): void {
-    const appOIDCCheck = this.devmode ? this.isDevOIDC : this.isStepperOIDC;
-    const appAPICheck = this.devmode ? this.isDevAPI : this.isStepperAPI;
-    const appSAMLCheck = this.devmode ? this.isDevSAML : this.isStepperSAML;
+    const appOIDCCheck = this.pro ? this.isDevOIDC : this.isStepperOIDC;
+    const appAPICheck = this.pro ? this.isDevAPI : this.isStepperAPI;
+    const appSAMLCheck = this.pro ? this.isDevSAML : this.isStepperSAML;
 
     if (appOIDCCheck) {
       this.requestRedirectValuesSubject$.next();
@@ -361,7 +410,7 @@ export class AppCreateComponent implements OnInit, OnDestroy {
           if (resp.clientId || resp.clientSecret) {
             this.showSavedDialog(resp);
           } else {
-            this.router.navigate(['projects', this.projectId, 'apps', resp.appId]);
+            this.router.navigate(['projects', this.projectId, 'apps', resp.appId], { queryParams: { new: true } });
           }
         })
         .catch((error) => {
@@ -379,7 +428,7 @@ export class AppCreateComponent implements OnInit, OnDestroy {
           if (resp.clientId || resp.clientSecret) {
             this.showSavedDialog(resp);
           } else {
-            this.router.navigate(['projects', this.projectId, 'apps', resp.appId]);
+            this.router.navigate(['projects', this.projectId, 'apps', resp.appId], { queryParams: { new: true } });
           }
         })
         .catch((error) => {
@@ -393,7 +442,7 @@ export class AppCreateComponent implements OnInit, OnDestroy {
         .addSAMLApp(this.samlAppRequest)
         .then((resp) => {
           this.loading = false;
-          this.router.navigate(['projects', this.projectId, 'apps', resp.appId]);
+          this.router.navigate(['projects', this.projectId, 'apps', resp.appId], { queryParams: { new: true } });
         })
         .catch((error) => {
           this.loading = false;
@@ -419,7 +468,7 @@ export class AppCreateComponent implements OnInit, OnDestroy {
     });
 
     dialogRef.afterClosed().subscribe(() => {
-      this.router.navigate(['projects', this.projectId, 'apps', added.appId]);
+      this.router.navigate(['projects', this.projectId, 'apps', added.appId], { queryParams: { new: true } });
     });
   }
 
@@ -458,6 +507,13 @@ export class AppCreateComponent implements OnInit, OnDestroy {
     return this.form.get('grantTypesList');
   }
 
+  get grantTypesListContainsOnlyDeviceCode(): boolean {
+    return (
+      this.oidcAppRequest.toObject().grantTypesList.length === 1 &&
+      this.oidcAppRequest.toObject().grantTypesList[0] === OIDCGrantType.OIDC_GRANT_TYPE_DEVICE_CODE
+    );
+  }
+
   get formappType(): AbstractControl | null {
     return this.form.get('appType');
   }
@@ -465,9 +521,6 @@ export class AppCreateComponent implements OnInit, OnDestroy {
   get formMetadataUrl(): AbstractControl | null {
     return this.form.get('metadataUrl');
   }
-  // get formapplicationType(): AbstractControl | null {
-  //     return this.form.get('applicationType');
-  // }
 
   get authMethodType(): AbstractControl | null {
     return this.form.get('authMethodType');
@@ -500,7 +553,7 @@ export class AppCreateComponent implements OnInit, OnDestroy {
   get decodedBase64(): string {
     const samlReq = this.samlAppRequest.toObject();
     if (samlReq && samlReq.metadataXml && typeof samlReq.metadataXml === 'string') {
-      return Buffer.from(samlReq.metadataXml, 'base64').toString('ascii');
+      return Buffer.from(samlReq.metadataXml, 'base64').toString('utf-8');
     } else {
       return '';
     }
@@ -508,12 +561,20 @@ export class AppCreateComponent implements OnInit, OnDestroy {
 
   set decodedBase64(xmlString) {
     if (this.samlAppRequest) {
-      const base64 = Buffer.from(xmlString, 'ascii').toString('base64');
+      const base64 = Buffer.from(xmlString, 'utf-8').toString('base64');
       this.samlAppRequest.setMetadataXml(base64);
     }
   }
 
   public get metadataUrl(): AbstractControl | null {
     return this.samlConfigForm.get('metadataUrl');
+  }
+
+  public get entityId(): AbstractControl | null {
+    return this.samlConfigForm.get('entityId');
+  }
+
+  public get acsURL(): AbstractControl | null {
+    return this.samlConfigForm.get('acsURL');
   }
 }

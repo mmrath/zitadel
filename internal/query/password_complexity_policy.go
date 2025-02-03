@@ -3,15 +3,19 @@ package query
 import (
 	"context"
 	"database/sql"
-	errs "errors"
+	"errors"
 	"time"
 
 	sq "github.com/Masterminds/squirrel"
+	"github.com/zitadel/logging"
 
 	"github.com/zitadel/zitadel/internal/api/authz"
+	"github.com/zitadel/zitadel/internal/api/call"
 	"github.com/zitadel/zitadel/internal/domain"
-	"github.com/zitadel/zitadel/internal/errors"
+	"github.com/zitadel/zitadel/internal/eventstore/handler/v2"
 	"github.com/zitadel/zitadel/internal/query/projection"
+	"github.com/zitadel/zitadel/internal/telemetry/tracing"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 type PasswordComplexityPolicy struct {
@@ -31,42 +35,54 @@ type PasswordComplexityPolicy struct {
 	IsDefault bool
 }
 
-func (q *Queries) PasswordComplexityPolicyByOrg(ctx context.Context, shouldTriggerBulk bool, orgID string) (*PasswordComplexityPolicy, error) {
-	if shouldTriggerBulk {
-		projection.PasswordComplexityProjection.Trigger(ctx)
-	}
+func (q *Queries) PasswordComplexityPolicyByOrg(ctx context.Context, shouldTriggerBulk bool, orgID string, withOwnerRemoved bool) (policy *PasswordComplexityPolicy, err error) {
+	ctx, span := tracing.NewSpan(ctx)
+	defer func() { span.EndWithError(err) }()
 
-	stmt, scan := preparePasswordComplexityPolicyQuery()
+	if shouldTriggerBulk {
+		_, traceSpan := tracing.NewNamedSpan(ctx, "TriggerPasswordComplexityProjection")
+		ctx, err = projection.PasswordComplexityProjection.Trigger(ctx, handler.WithAwaitRunning())
+		logging.OnError(err).Debug("trigger failed")
+		traceSpan.EndWithError(err)
+	}
+	eq := sq.Eq{PasswordComplexityColInstanceID.identifier(): authz.GetInstance(ctx).InstanceID()}
+	if !withOwnerRemoved {
+		eq[PasswordComplexityColOwnerRemoved.identifier()] = false
+	}
+	stmt, scan := preparePasswordComplexityPolicyQuery(ctx, q.client)
 	query, args, err := stmt.Where(
 		sq.And{
-			sq.Eq{
-				PasswordComplexityColInstanceID.identifier(): authz.GetInstance(ctx).InstanceID(),
-			},
+			eq,
 			sq.Or{
-				sq.Eq{
-					PasswordComplexityColID.identifier(): orgID,
-				},
-				sq.Eq{
-					PasswordComplexityColID.identifier(): authz.GetInstance(ctx).InstanceID(),
-				},
+				sq.Eq{PasswordComplexityColID.identifier(): orgID},
+				sq.Eq{PasswordComplexityColID.identifier(): authz.GetInstance(ctx).InstanceID()},
 			},
 		}).
 		OrderBy(PasswordComplexityColIsDefault.identifier()).
 		Limit(1).ToSql()
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "QUERY-lDnrk", "Errors.Query.SQLStatement")
+		return nil, zerrors.ThrowInternal(err, "QUERY-lDnrk", "Errors.Query.SQLStatement")
 	}
 
-	row := q.client.QueryRowContext(ctx, query, args...)
-	return scan(row)
+	err = q.client.QueryRowContext(ctx, func(row *sql.Row) error {
+		policy, err = scan(row)
+		return err
+	}, query, args...)
+	return policy, err
 }
 
-func (q *Queries) DefaultPasswordComplexityPolicy(ctx context.Context, shouldTriggerBulk bool) (*PasswordComplexityPolicy, error) {
+func (q *Queries) DefaultPasswordComplexityPolicy(ctx context.Context, shouldTriggerBulk bool) (policy *PasswordComplexityPolicy, err error) {
+	ctx, span := tracing.NewSpan(ctx)
+	defer func() { span.EndWithError(err) }()
+
 	if shouldTriggerBulk {
-		projection.PasswordComplexityProjection.Trigger(ctx)
+		_, traceSpan := tracing.NewNamedSpan(ctx, "TriggerPasswordComplexityProjection")
+		ctx, err = projection.PasswordComplexityProjection.Trigger(ctx, handler.WithAwaitRunning())
+		logging.OnError(err).Debug("trigger failed")
+		traceSpan.EndWithError(err)
 	}
 
-	stmt, scan := preparePasswordComplexityPolicyQuery()
+	stmt, scan := preparePasswordComplexityPolicyQuery(ctx, q.client)
 	query, args, err := stmt.Where(sq.Eq{
 		PasswordComplexityColID.identifier():         authz.GetInstance(ctx).InstanceID(),
 		PasswordComplexityColInstanceID.identifier(): authz.GetInstance(ctx).InstanceID(),
@@ -74,11 +90,14 @@ func (q *Queries) DefaultPasswordComplexityPolicy(ctx context.Context, shouldTri
 		OrderBy(PasswordComplexityColIsDefault.identifier()).
 		Limit(1).ToSql()
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "QUERY-h4Uyr", "Errors.Query.SQLStatement")
+		return nil, zerrors.ThrowInternal(err, "QUERY-h4Uyr", "Errors.Query.SQLStatement")
 	}
 
-	row := q.client.QueryRowContext(ctx, query, args...)
-	return scan(row)
+	err = q.client.QueryRowContext(ctx, func(row *sql.Row) error {
+		policy, err = scan(row)
+		return err
+	}, query, args...)
+	return policy, err
 }
 
 var (
@@ -138,9 +157,13 @@ var (
 		name:  projection.ComplexityPolicyStateCol,
 		table: passwordComplexityTable,
 	}
+	PasswordComplexityColOwnerRemoved = Column{
+		name:  projection.ComplexityPolicyOwnerRemovedCol,
+		table: passwordComplexityTable,
+	}
 )
 
-func preparePasswordComplexityPolicyQuery() (sq.SelectBuilder, func(*sql.Row) (*PasswordComplexityPolicy, error)) {
+func preparePasswordComplexityPolicyQuery(ctx context.Context, db prepareDatabase) (sq.SelectBuilder, func(*sql.Row) (*PasswordComplexityPolicy, error)) {
 	return sq.Select(
 			PasswordComplexityColID.identifier(),
 			PasswordComplexityColSequence.identifier(),
@@ -155,7 +178,8 @@ func preparePasswordComplexityPolicyQuery() (sq.SelectBuilder, func(*sql.Row) (*
 			PasswordComplexityColIsDefault.identifier(),
 			PasswordComplexityColState.identifier(),
 		).
-			From(passwordComplexityTable.identifier()).PlaceholderFormat(sq.Dollar),
+			From(passwordComplexityTable.identifier() + db.Timetravel(call.Took(ctx))).
+			PlaceholderFormat(sq.Dollar),
 		func(row *sql.Row) (*PasswordComplexityPolicy, error) {
 			policy := new(PasswordComplexityPolicy)
 			err := row.Scan(
@@ -173,10 +197,10 @@ func preparePasswordComplexityPolicyQuery() (sq.SelectBuilder, func(*sql.Row) (*
 				&policy.State,
 			)
 			if err != nil {
-				if errs.Is(err, sql.ErrNoRows) {
-					return nil, errors.ThrowNotFound(err, "QUERY-63mtI", "Errors.PasswordComplexity.NotFound")
+				if errors.Is(err, sql.ErrNoRows) {
+					return nil, zerrors.ThrowNotFound(err, "QUERY-hgA9vuM0qg", "Errors.IAM.PasswordComplexityPolicy.NotFound")
 				}
-				return nil, errors.ThrowInternal(err, "QUERY-uulCZ", "Errors.Internal")
+				return nil, zerrors.ThrowInternal(err, "QUERY-TvvW9Uij7M", "Errors.Internal")
 			}
 			return policy, nil
 		}

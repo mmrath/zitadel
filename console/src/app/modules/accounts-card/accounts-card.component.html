@@ -1,16 +1,12 @@
 <div class="accounts-card">
   <cnsl-avatar
     (click)="editUserProfile()"
-    *ngIf="user && user.human?.profile && user.human?.profile?.displayName"
+    *ngIf="user"
     class="avatar"
     [ngClass]="{ 'iam-user': iamuser }"
     [forColor]="user.preferredLoginName"
     [avatarUrl]="user.human?.profile?.avatarUrl || ''"
-    [name]="
-      user.human && user.human.profile && user.human.profile.displayName
-        ? user.human.profile.displayName
-        : user.human?.profile?.firstName + ' ' + user.human?.profile?.lastName
-    "
+    [name]="user.human?.profile?.displayName ?? ''"
     [size]="80"
   >
   </cnsl-avatar>
@@ -35,14 +31,9 @@
       <div class="col">
         <span class="user-title">{{ session.displayName ? session.displayName : session.userName }} </span>
         <span class="loginname">{{ session.loginName }}</span>
-        <span
-          class="state"
-          [ngClass]="{
-            active: session.authState === UserState.USER_STATE_ACTIVE,
-            inactive: session.authState === UserState.USER_STATE_INACTIVE
-          }"
-          >{{ 'USER.STATE.' + session.authState | translate }}</span
-        >
+        <span class="state inactive" *ngIf="session.authState === UserState.USER_STATE_INACTIVE">{{
+          'USER.STATE.' + session.authState | translate
+        }}</span>
       </div>
       <mat-icon>keyboard_arrow_right</mat-icon>
     </a>

@@ -7,9 +7,10 @@ import (
 	sq "github.com/Masterminds/squirrel"
 
 	"github.com/zitadel/zitadel/internal/api/authz"
-
-	"github.com/zitadel/zitadel/internal/errors"
+	"github.com/zitadel/zitadel/internal/api/call"
+	"github.com/zitadel/zitadel/internal/domain"
 	"github.com/zitadel/zitadel/internal/query/projection"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 var (
@@ -40,6 +41,10 @@ var (
 	}
 	ProjectGrantMemberResourceOwner = Column{
 		name:  projection.MemberResourceOwner,
+		table: projectGrantMemberTable,
+	}
+	ProjectGrantMemberUserResourceOwner = Column{
+		name:  projection.MemberUserResourceOwner,
 		table: projectGrantMemberTable,
 	}
 	ProjectGrantMemberInstanceID = Column{
@@ -76,39 +81,38 @@ func (q *ProjectGrantMembersQuery) toQuery(query sq.SelectBuilder) sq.SelectBuil
 		})
 }
 
-func (q *Queries) ProjectGrantMembers(ctx context.Context, queries *ProjectGrantMembersQuery) (*Members, error) {
-	query, scan := prepareProjectGrantMembersQuery()
-	stmt, args, err := queries.toQuery(query).
-		Where(sq.Eq{
-			ProjectGrantMemberInstanceID.identifier(): authz.GetInstance(ctx).InstanceID(),
-		}).ToSql()
+func (q *Queries) ProjectGrantMembers(ctx context.Context, queries *ProjectGrantMembersQuery) (members *Members, err error) {
+	query, scan := prepareProjectGrantMembersQuery(ctx, q.client)
+	eq := sq.Eq{ProjectGrantMemberInstanceID.identifier(): authz.GetInstance(ctx).InstanceID()}
+	stmt, args, err := queries.toQuery(query).Where(eq).ToSql()
 	if err != nil {
-		return nil, errors.ThrowInvalidArgument(err, "QUERY-USNwM", "Errors.Query.InvalidRequest")
+		return nil, zerrors.ThrowInvalidArgument(err, "QUERY-USNwM", "Errors.Query.InvalidRequest")
 	}
 
-	currentSequence, err := q.latestSequence(ctx, projectGrantMemberTable)
+	currentSequence, err := q.latestState(ctx, projectGrantMemberTable)
 	if err != nil {
 		return nil, err
 	}
 
-	rows, err := q.client.QueryContext(ctx, stmt, args...)
+	err = q.client.QueryContext(ctx, func(rows *sql.Rows) error {
+		members, err = scan(rows)
+		return err
+	}, stmt, args...)
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "QUERY-Pdg1I", "Errors.Internal")
+		return nil, zerrors.ThrowInternal(err, "QUERY-Pdg1I", "Errors.Internal")
 	}
-	members, err := scan(rows)
-	if err != nil {
-		return nil, err
-	}
-	members.LatestSequence = currentSequence
+
+	members.State = currentSequence
 	return members, err
 }
 
-func prepareProjectGrantMembersQuery() (sq.SelectBuilder, func(*sql.Rows) (*Members, error)) {
+func prepareProjectGrantMembersQuery(ctx context.Context, db prepareDatabase) (sq.SelectBuilder, func(*sql.Rows) (*Members, error)) {
 	return sq.Select(
 			ProjectGrantMemberCreationDate.identifier(),
 			ProjectGrantMemberChangeDate.identifier(),
 			ProjectGrantMemberSequence.identifier(),
 			ProjectGrantMemberResourceOwner.identifier(),
+			ProjectGrantMemberUserResourceOwner.identifier(),
 			ProjectGrantMemberUserID.identifier(),
 			ProjectGrantMemberRoles.identifier(),
 			LoginNameNameCol.identifier(),
@@ -118,12 +122,14 @@ func prepareProjectGrantMembersQuery() (sq.SelectBuilder, func(*sql.Rows) (*Memb
 			HumanDisplayNameCol.identifier(),
 			MachineNameCol.identifier(),
 			HumanAvatarURLCol.identifier(),
+			UserTypeCol.identifier(),
 			countColumn.identifier(),
 		).From(projectGrantMemberTable.identifier()).
 			LeftJoin(join(HumanUserIDCol, ProjectGrantMemberUserID)).
 			LeftJoin(join(MachineUserIDCol, ProjectGrantMemberUserID)).
+			LeftJoin(join(UserIDCol, ProjectGrantMemberUserID)).
 			LeftJoin(join(LoginNameUserIDCol, ProjectGrantMemberUserID)).
-			LeftJoin(join(ProjectGrantColumnGrantID, ProjectGrantMemberGrantID)).
+			LeftJoin(join(ProjectGrantColumnGrantID, ProjectGrantMemberGrantID) + db.Timetravel(call.Took(ctx))).
 			Where(
 				sq.Eq{LoginNameIsPrimaryCol.identifier(): true},
 			).PlaceholderFormat(sq.Dollar),
@@ -142,6 +148,7 @@ func prepareProjectGrantMembersQuery() (sq.SelectBuilder, func(*sql.Rows) (*Memb
 					displayName        = sql.NullString{}
 					machineName        = sql.NullString{}
 					avatarURL          = sql.NullString{}
+					userType           = sql.NullInt32{}
 				)
 
 				err := rows.Scan(
@@ -149,6 +156,7 @@ func prepareProjectGrantMembersQuery() (sq.SelectBuilder, func(*sql.Rows) (*Memb
 					&member.ChangeDate,
 					&member.Sequence,
 					&member.ResourceOwner,
+					&member.UserResourceOwner,
 					&member.UserID,
 					&member.Roles,
 					&preferredLoginName,
@@ -158,6 +166,7 @@ func prepareProjectGrantMembersQuery() (sq.SelectBuilder, func(*sql.Rows) (*Memb
 					&displayName,
 					&machineName,
 					&avatarURL,
+					&userType,
 
 					&count,
 				)
@@ -176,12 +185,13 @@ func prepareProjectGrantMembersQuery() (sq.SelectBuilder, func(*sql.Rows) (*Memb
 				} else {
 					member.DisplayName = machineName.String
 				}
+				member.UserType = domain.UserType(userType.Int32)
 
 				members = append(members, member)
 			}
 
 			if err := rows.Close(); err != nil {
-				return nil, errors.ThrowInternal(err, "QUERY-EqJFc", "Errors.Query.CloseRows")
+				return nil, zerrors.ThrowInternal(err, "QUERY-EqJFc", "Errors.Query.CloseRows")
 			}
 
 			return &Members{

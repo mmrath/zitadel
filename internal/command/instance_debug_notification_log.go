@@ -4,14 +4,14 @@ import (
 	"context"
 
 	"github.com/zitadel/zitadel/internal/domain"
-	caos_errs "github.com/zitadel/zitadel/internal/errors"
 	"github.com/zitadel/zitadel/internal/eventstore"
 	"github.com/zitadel/zitadel/internal/notification/channels/fs"
 	"github.com/zitadel/zitadel/internal/repository/instance"
 	"github.com/zitadel/zitadel/internal/telemetry/tracing"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
-func (c *Commands) AddDebugNotificationProviderLog(ctx context.Context, fileSystemProvider *fs.FSConfig) (*domain.ObjectDetails, error) {
+func (c *Commands) AddDebugNotificationProviderLog(ctx context.Context, fileSystemProvider *fs.Config) (*domain.ObjectDetails, error) {
 	writeModel := NewInstanceDebugNotificationLogWriteModel(ctx)
 	instanceAgg := InstanceAggregateFromWriteModel(&writeModel.WriteModel)
 	events, err := c.addDefaultDebugNotificationLog(ctx, instanceAgg, writeModel, fileSystemProvider)
@@ -29,13 +29,13 @@ func (c *Commands) AddDebugNotificationProviderLog(ctx context.Context, fileSyst
 	return writeModelToObjectDetails(&writeModel.DebugNotificationWriteModel.WriteModel), nil
 }
 
-func (c *Commands) addDefaultDebugNotificationLog(ctx context.Context, instanceAgg *eventstore.Aggregate, addedWriteModel *InstanceDebugNotificationLogWriteModel, fileSystemProvider *fs.FSConfig) ([]eventstore.Command, error) {
+func (c *Commands) addDefaultDebugNotificationLog(ctx context.Context, instanceAgg *eventstore.Aggregate, addedWriteModel *InstanceDebugNotificationLogWriteModel, fileSystemProvider *fs.Config) ([]eventstore.Command, error) {
 	err := c.eventstore.FilterToQueryReducer(ctx, addedWriteModel)
 	if err != nil {
 		return nil, err
 	}
 	if addedWriteModel.State.Exists() {
-		return nil, caos_errs.ThrowAlreadyExists(nil, "INSTANCE-3h0fs", "Errors.IAM.DebugNotificationProvider.AlreadyExists")
+		return nil, zerrors.ThrowAlreadyExists(nil, "INSTANCE-3h0fs", "Errors.IAM.DebugNotificationProvider.AlreadyExists")
 	}
 
 	events := []eventstore.Command{
@@ -46,7 +46,7 @@ func (c *Commands) addDefaultDebugNotificationLog(ctx context.Context, instanceA
 	return events, nil
 }
 
-func (c *Commands) ChangeDefaultNotificationLog(ctx context.Context, fileSystemProvider *fs.FSConfig) (*domain.ObjectDetails, error) {
+func (c *Commands) ChangeDefaultNotificationLog(ctx context.Context, fileSystemProvider *fs.Config) (*domain.ObjectDetails, error) {
 	writeModel := NewInstanceDebugNotificationLogWriteModel(ctx)
 	instanceAgg := InstanceAggregateFromWriteModel(&writeModel.WriteModel)
 	event, err := c.changeDefaultDebugNotificationProviderLog(ctx, instanceAgg, writeModel, fileSystemProvider)
@@ -64,19 +64,19 @@ func (c *Commands) ChangeDefaultNotificationLog(ctx context.Context, fileSystemP
 	return writeModelToObjectDetails(&writeModel.DebugNotificationWriteModel.WriteModel), nil
 }
 
-func (c *Commands) changeDefaultDebugNotificationProviderLog(ctx context.Context, instanceAgg *eventstore.Aggregate, existingProvider *InstanceDebugNotificationLogWriteModel, fileSystemProvider *fs.FSConfig) (eventstore.Command, error) {
+func (c *Commands) changeDefaultDebugNotificationProviderLog(ctx context.Context, instanceAgg *eventstore.Aggregate, existingProvider *InstanceDebugNotificationLogWriteModel, fileSystemProvider *fs.Config) (eventstore.Command, error) {
 	err := c.defaultDebugNotificationProviderLogWriteModelByID(ctx, existingProvider)
 	if err != nil {
 		return nil, err
 	}
 	if !existingProvider.State.Exists() {
-		return nil, caos_errs.ThrowNotFound(nil, "INSTANCE-2h0s3", "Errors.IAM.DebugNotificationProvider.NotFound")
+		return nil, zerrors.ThrowNotFound(nil, "INSTANCE-2h0s3", "Errors.IAM.DebugNotificationProvider.NotFound")
 	}
 	changedEvent, hasChanged := existingProvider.NewChangedEvent(ctx,
 		instanceAgg,
 		fileSystemProvider.Compact)
 	if !hasChanged {
-		return nil, caos_errs.ThrowPreconditionFailed(nil, "INSTANCE-fn9p3", "Errors.IAM.LoginPolicy.NotChanged")
+		return nil, zerrors.ThrowPreconditionFailed(nil, "INSTANCE-fn9p3", "Errors.IAM.LoginPolicy.NotChanged")
 	}
 	return changedEvent, nil
 }
@@ -89,7 +89,7 @@ func (c *Commands) RemoveDefaultNotificationLog(ctx context.Context) (*domain.Ob
 		return nil, err
 	}
 	if !existingProvider.State.Exists() {
-		return nil, caos_errs.ThrowNotFound(nil, "INSTANCE-39lse", "Errors.IAM.DebugNotificationProvider.NotFound")
+		return nil, zerrors.ThrowNotFound(nil, "INSTANCE-39lse", "Errors.IAM.DebugNotificationProvider.NotFound")
 	}
 
 	events, err := c.eventstore.Push(ctx, instance.NewDebugNotificationProviderLogRemovedEvent(ctx, instanceAgg))

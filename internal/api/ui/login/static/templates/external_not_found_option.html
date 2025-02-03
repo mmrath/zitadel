@@ -1,8 +1,11 @@
 {{template "main-top" .}}
 
 <div class="lgn-head">
-    <h1>{{t "ExternalNotFound.Title"}}</h1>
+    <h1>{{.ProviderName}} - {{t "ExternalNotFound.Title"}}</h1>
+
+    {{ if or .IsLinkingAllowed .IsCreationAllowed }}
     <p>{{t "ExternalNotFound.Description"}}</p>
+    {{ end }}
 
 </div>
 
@@ -21,6 +24,7 @@
     <input type="hidden" id="external-phone-verified" name="external-phone-verified" value="{{ .ExternalPhoneVerified }}" />
 
     <div class="lgn-register">
+        {{ if or .IsCreationAllowed }}
         <div class="double-col">
             <div class="lgn-field">
                 <label class="lgn-label" for="firstname">{{t "ExternalRegistrationUserOverview.FirstnameLabel"}}</label>
@@ -47,7 +51,7 @@
 
         <div class="lgn-field double">
             <label class="lgn-label" for="email">{{t "ExternalRegistrationUserOverview.EmailLabel"}}</label>
-            <input class="lgn-input" type="text" id="email" name="email" autocomplete="email" value="{{ .Email }}" required>
+            <input class="lgn-input" type="email" id="email" name="email" autocomplete="email" value="{{ .Email }}" required>
         </div>
 
         <div class="lgn-field double">
@@ -64,39 +68,73 @@
                     </option>
                     <option value="en" id="en" {{if (selectedLanguage "en")}} selected {{end}}>{{t "ExternalNotFound.English"}}
                     </option>
-                    <option value="it" id="it" {{if (selectedLanguage "it")}} selected {{end}}>{{t "ExternalNotFound.Italian"}}
+                    <option value="es" id="es" {{if (selectedLanguage "es")}} selected {{end}}>{{t "ExternalNotFound.Spanish"}}
                     </option>
                     <option value="fr" id="fr" {{if (selectedLanguage "fr")}} selected {{end}}>{{t "ExternalNotFound.French"}}
                     </option>
+                    <option value="id" id="id" {{if (selectedLanguage "id")}} selected {{end}}>{{t "ExternalNotFound.Indonesian"}}
+                    </option>
+                    <option value="it" id="it" {{if (selectedLanguage "it")}} selected {{end}}>{{t "ExternalNotFound.Italian"}}
+                    </option>
+                    <option value="ja" id="ja" {{if (selectedLanguage "ja")}} selected {{end}}>{{t "ExternalNotFound.Japanese"}}
+                    </option>
+                    <option value="pl" id="pl" {{if (selectedLanguage "pl")}} selected {{end}}>{{t "ExternalNotFound.Polish"}}
+                    </option>
                     <option value="zh" id="zh" {{if (selectedLanguage "zh")}} selected {{end}}>{{t "ExternalNotFound.Chinese"}}
+                    </option>
+                    <option value="bg" id="bg" {{if (selectedLanguage "bg")}} selected {{end}}>{{t "ExternalNotFound.Bulgarian"}}
+                    </option>
+                    <option value="pt" id="pt" {{if (selectedLanguage "pt")}} selected {{end}}>{{t "ExternalNotFound.Portuguese"}}
+                    </option>                    
+                    <option value="mk" id="mk" {{if (selectedLanguage "mk")}} selected {{end}}>{{t "ExternalNotFound.Macedonian"}}
+                    </option>
+                    <option value="cs" id="cs" {{if (selectedLanguage "cs")}} selected {{end}}>{{t "ExternalNotFound.Czech"}}
+                    </option>
+                    <option value="ru" id="ru" {{if (selectedLanguage "ru")}} selected {{end}}>{{t "ExternalNotFound.Russian"}}
+                    </option>
+                    <option value="nl" id="nl" {{if (selectedLanguage "nl")}} selected {{end}}>{{t "ExternalNotFound.Dutch"}}
+                    </option>
+                    <option value="sv" id="sv" {{if (selectedLanguage "sv")}} selected {{end}}>{{t "ExternalNotFound.Swedish"}}
+                    </option>
+                    <option value="hu" id="hu" {{if (selectedLanguage "hu")}} selected {{end}}>{{t "ExternalNotFound.Hungarian"}}
+                    </option>
+                    <option value="ko" id="ko" {{if (selectedLanguage "ko")}} selected {{end}}>{{t "ExternalNotFound.Korean"}}
                     </option>
                 </select>
             </div>
         </div>
+        {{end}}
 
-        {{ if or .TOSLink .PrivacyLink }}
+        {{ if and (or .IsLinkingAllowed .IsCreationAllowed) (or .TOSLink .PrivacyLink) }}
         <div class="lgn-field">
             <label class="lgn-label">{{t "ExternalNotFound.TosAndPrivacyLabel"}}</label>
+            {{ if .TOSLink }}
             <div class="lgn-checkbox">
                 <input type="checkbox" id="terms-confirm"
                        name="terms-confirm" required>
                 <label for="terms-confirm">
                     {{t "ExternalNotFound.TosConfirm"}}
-                    {{ if .TOSLink }}
                     <a class="tos-link" target="_blank" href="{{ .TOSLink }}" rel="noopener noreferrer">
                         {{t "ExternalNotFound.TosLinkText"}}
                     </a>
-                    {{end}}
-                    {{ if and .TOSLink .PrivacyLink }}
-                    {{t "ExternalNotFound.TosConfirmAnd"}}
-                    {{ end }}
-                    {{ if .PrivacyLink }}
+                </label>
+            </div>
+            {{end}}
+            {{ if and .TOSLink .PrivacyLink }}
+            <br />
+            {{end}}
+            {{ if .PrivacyLink }}
+            <div class="lgn-checkbox">
+                <input type="checkbox" id="terms-confirm-privacy"
+                       name="terms-confirm-privacy" required>
+                <label for="terms-confirm-privacy">
+                    {{t "ExternalNotFound.PrivacyConfirm"}}
                     <a class="tos-link" target="_blank" href="{{ .PrivacyLink}}" rel="noopener noreferrer">
                         {{t "ExternalNotFound.PrivacyLinkText"}}
                     </a>
-                    {{end}}
                 </label>
             </div>
+            {{end}}
         </div>
         {{ end }}
     </div>
@@ -109,13 +147,17 @@
             <i class="lgn-icon-arrow-left-solid"></i>
         </button>
 
+        {{ if .IsLinkingAllowed }}
         <button type="submit" formaction="{{ externalNotFoundOptionUrl "linkbutton"}}" class="lgn-raised-button lgn-primary" name="linkbutton" value="true">
             {{t "ExternalNotFound.LinkButtonText"}}
         </button>
-            <span class="fill-space"></span>
+        {{ end }}
+        <span class="fill-space"></span>
+        {{ if .IsCreationAllowed }}
         <button type="submit" formaction="{{ externalNotFoundOptionUrl "autoregisterbutton"}}" class="lgn-raised-button lgn-primary" name="autoregisterbutton" value="true">
             {{t "ExternalNotFound.AutoRegisterButtonText"}}
         </button>
+        {{ end }}
     </div>
 </form>
 

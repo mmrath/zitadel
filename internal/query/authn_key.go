@@ -3,16 +3,20 @@ package query
 import (
 	"context"
 	"database/sql"
-	errs "errors"
+	_ "embed"
+	"errors"
 	"time"
 
 	sq "github.com/Masterminds/squirrel"
+	"github.com/zitadel/logging"
 
 	"github.com/zitadel/zitadel/internal/api/authz"
-
+	"github.com/zitadel/zitadel/internal/api/call"
 	"github.com/zitadel/zitadel/internal/domain"
-	"github.com/zitadel/zitadel/internal/errors"
+	"github.com/zitadel/zitadel/internal/eventstore/handler/v2"
 	"github.com/zitadel/zitadel/internal/query/projection"
+	"github.com/zitadel/zitadel/internal/telemetry/tracing"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 var (
@@ -26,6 +30,10 @@ var (
 	}
 	AuthNKeyColumnCreationDate = Column{
 		name:  projection.AuthNKeyCreationDateCol,
+		table: authNKeyTable,
+	}
+	AuthNKeyColumnChangeDate = Column{
+		name:  projection.AuthNKeyChangeDateCol,
 		table: authNKeyTable,
 	}
 	AuthNKeyColumnResourceOwner = Column{
@@ -78,6 +86,7 @@ type AuthNKeys struct {
 type AuthNKey struct {
 	ID            string
 	CreationDate  time.Time
+	ChangeDate    time.Time
 	ResourceOwner string
 	Sequence      uint64
 
@@ -93,6 +102,7 @@ type AuthNKeysData struct {
 type AuthNKeyData struct {
 	ID            string
 	CreationDate  time.Time
+	ChangeDate    time.Time
 	ResourceOwner string
 	Sequence      uint64
 
@@ -115,99 +125,117 @@ func (q *AuthNKeySearchQueries) toQuery(query sq.SelectBuilder) sq.SelectBuilder
 	return query
 }
 
-func (q *Queries) SearchAuthNKeys(ctx context.Context, queries *AuthNKeySearchQueries) (authNKeys *AuthNKeys, err error) {
-	query, scan := prepareAuthNKeysQuery()
+func (q *Queries) SearchAuthNKeys(ctx context.Context, queries *AuthNKeySearchQueries, withOwnerRemoved bool) (authNKeys *AuthNKeys, err error) {
+	ctx, span := tracing.NewSpan(ctx)
+	defer func() { span.EndWithError(err) }()
+
+	query, scan := prepareAuthNKeysQuery(ctx, q.client)
 	query = queries.toQuery(query)
-	stmt, args, err := query.Where(
-		sq.Eq{
-			AuthNKeyColumnEnabled.identifier():    true,
-			AuthNKeyColumnInstanceID.identifier(): authz.GetInstance(ctx).InstanceID(),
-		},
-	).ToSql()
+	eq := sq.Eq{
+		AuthNKeyColumnEnabled.identifier():    true,
+		AuthNKeyColumnInstanceID.identifier(): authz.GetInstance(ctx).InstanceID(),
+	}
+	stmt, args, err := query.Where(eq).ToSql()
 	if err != nil {
-		return nil, errors.ThrowInvalidArgument(err, "QUERY-SAf3f", "Errors.Query.InvalidRequest")
+		return nil, zerrors.ThrowInvalidArgument(err, "QUERY-SAf3f", "Errors.Query.InvalidRequest")
 	}
 
-	rows, err := q.client.QueryContext(ctx, stmt, args...)
+	err = q.client.QueryContext(ctx, func(rows *sql.Rows) error {
+		authNKeys, err = scan(rows)
+		return err
+	}, stmt, args...)
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "QUERY-Dbg53", "Errors.Internal")
+		return nil, zerrors.ThrowInternal(err, "QUERY-Dbg53", "Errors.Internal")
 	}
-	authNKeys, err = scan(rows)
-	if err != nil {
-		return nil, err
-	}
-	authNKeys.LatestSequence, err = q.latestSequence(ctx, authNKeyTable)
+
+	authNKeys.State, err = q.latestState(ctx, authNKeyTable)
 	return authNKeys, err
 }
 
 func (q *Queries) SearchAuthNKeysData(ctx context.Context, queries *AuthNKeySearchQueries) (authNKeys *AuthNKeysData, err error) {
-	query, scan := prepareAuthNKeysDataQuery()
+	ctx, span := tracing.NewSpan(ctx)
+	defer func() { span.EndWithError(err) }()
+
+	query, scan := prepareAuthNKeysDataQuery(ctx, q.client)
 	query = queries.toQuery(query)
-	stmt, args, err := query.Where(
-		sq.Eq{
-			AuthNKeyColumnEnabled.identifier(): true,
-		},
-	).ToSql()
+	eq := sq.Eq{
+		AuthNKeyColumnEnabled.identifier():    true,
+		AuthNKeyColumnInstanceID.identifier(): authz.GetInstance(ctx).InstanceID(),
+	}
+	stmt, args, err := query.Where(eq).ToSql()
 	if err != nil {
-		return nil, errors.ThrowInvalidArgument(err, "QUERY-SAg3f", "Errors.Query.InvalidRequest")
+		return nil, zerrors.ThrowInvalidArgument(err, "QUERY-SAg3f", "Errors.Query.InvalidRequest")
 	}
 
-	rows, err := q.client.QueryContext(ctx, stmt, args...)
+	err = q.client.QueryContext(ctx, func(rows *sql.Rows) error {
+		authNKeys, err = scan(rows)
+		return err
+	}, stmt, args...)
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "QUERY-Dbi53", "Errors.Internal")
+		return nil, zerrors.ThrowInternal(err, "QUERY-Dbi53", "Errors.Internal")
 	}
-	authNKeys, err = scan(rows)
-	if err != nil {
-		return nil, err
-	}
-	authNKeys.LatestSequence, err = q.latestSequence(ctx, authNKeyTable)
+	authNKeys.State, err = q.latestState(ctx, authNKeyTable)
 	return authNKeys, err
 }
 
-func (q *Queries) GetAuthNKeyByID(ctx context.Context, shouldTriggerBulk bool, id string, queries ...SearchQuery) (*AuthNKey, error) {
+func (q *Queries) GetAuthNKeyByID(ctx context.Context, shouldTriggerBulk bool, id string, queries ...SearchQuery) (key *AuthNKey, err error) {
+	ctx, span := tracing.NewSpan(ctx)
+	defer func() { span.EndWithError(err) }()
+
 	if shouldTriggerBulk {
-		projection.AuthNKeyProjection.Trigger(ctx)
+		_, traceSpan := tracing.NewNamedSpan(ctx, "TriggerAuthNKeyProjection")
+		ctx, err = projection.AuthNKeyProjection.Trigger(ctx, handler.WithAwaitRunning())
+		logging.OnError(err).Debug("trigger failed")
+		traceSpan.EndWithError(err)
 	}
 
-	query, scan := prepareAuthNKeyQuery()
+	query, scan := prepareAuthNKeyQuery(ctx, q.client)
 	for _, q := range queries {
 		query = q.toQuery(query)
 	}
-	stmt, args, err := query.Where(
-		sq.Eq{
-			AuthNKeyColumnID.identifier():         id,
-			AuthNKeyColumnEnabled.identifier():    true,
-			AuthNKeyColumnInstanceID.identifier(): authz.GetInstance(ctx).InstanceID(),
-		}).ToSql()
+	eq := sq.Eq{
+		AuthNKeyColumnID.identifier():         id,
+		AuthNKeyColumnEnabled.identifier():    true,
+		AuthNKeyColumnInstanceID.identifier(): authz.GetInstance(ctx).InstanceID(),
+	}
+	stmt, args, err := query.Where(eq).ToSql()
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "QUERY-AGhg4", "Errors.Query.SQLStatement")
+		return nil, zerrors.ThrowInternal(err, "QUERY-AGhg4", "Errors.Query.SQLStatement")
 	}
 
-	row := q.client.QueryRowContext(ctx, stmt, args...)
-	return scan(row)
+	err = q.client.QueryRowContext(ctx, func(row *sql.Row) error {
+		key, err = scan(row)
+		return err
+	}, stmt, args...)
+	return key, err
 }
 
-func (q *Queries) GetAuthNKeyPublicKeyByIDAndIdentifier(ctx context.Context, id string, identifier string) ([]byte, error) {
-	stmt, scan := prepareAuthNKeyPublicKeyQuery()
-	query, args, err := stmt.Where(
-		sq.And{
-			sq.Eq{
-				AuthNKeyColumnID.identifier():         id,
-				AuthNKeyColumnIdentifier.identifier(): identifier,
-				AuthNKeyColumnEnabled.identifier():    true,
-				AuthNKeyColumnInstanceID.identifier(): authz.GetInstance(ctx).InstanceID(),
-			},
-			sq.Gt{
-				AuthNKeyColumnExpiration.identifier(): time.Now(),
-			},
+func (q *Queries) GetAuthNKeyPublicKeyByIDAndIdentifier(ctx context.Context, id string, identifier string) (key []byte, err error) {
+	ctx, span := tracing.NewSpan(ctx)
+	defer func() { span.EndWithError(err) }()
+
+	stmt, scan := prepareAuthNKeyPublicKeyQuery(ctx, q.client)
+	eq := sq.And{
+		sq.Eq{
+			AuthNKeyColumnID.identifier():         id,
+			AuthNKeyColumnIdentifier.identifier(): identifier,
+			AuthNKeyColumnEnabled.identifier():    true,
+			AuthNKeyColumnInstanceID.identifier(): authz.GetInstance(ctx).InstanceID(),
 		},
-	).ToSql()
+		sq.Gt{
+			AuthNKeyColumnExpiration.identifier(): time.Now(),
+		},
+	}
+	query, args, err := stmt.Where(eq).ToSql()
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "QUERY-DAb32", "Errors.Query.SQLStatement")
+		return nil, zerrors.ThrowInternal(err, "QUERY-DAb32", "Errors.Query.SQLStatement")
 	}
 
-	row := q.client.QueryRowContext(ctx, query, args...)
-	return scan(row)
+	err = q.client.QueryRowContext(ctx, func(row *sql.Row) error {
+		key, err = scan(row)
+		return err
+	}, query, args...)
+	return key, err
 }
 
 func NewAuthNKeyResourceOwnerQuery(id string) (SearchQuery, error) {
@@ -222,16 +250,56 @@ func NewAuthNKeyObjectIDQuery(id string) (SearchQuery, error) {
 	return NewTextQuery(AuthNKeyColumnObjectID, id, TextEquals)
 }
 
-func prepareAuthNKeysQuery() (sq.SelectBuilder, func(rows *sql.Rows) (*AuthNKeys, error)) {
+//go:embed authn_key_user.sql
+var authNKeyUserQuery string
+
+type AuthNKeyUser struct {
+	UserID        string
+	ResourceOwner string
+	Username      string
+	TokenType     domain.OIDCTokenType
+	PublicKey     []byte
+}
+
+func (q *Queries) GetAuthNKeyUser(ctx context.Context, keyID, userID string) (_ *AuthNKeyUser, err error) {
+	ctx, span := tracing.NewSpan(ctx)
+	defer func() { span.EndWithError(err) }()
+
+	dst := new(AuthNKeyUser)
+	err = q.client.QueryRowContext(ctx, func(row *sql.Row) error {
+		return row.Scan(
+			&dst.UserID,
+			&dst.ResourceOwner,
+			&dst.Username,
+			&dst.TokenType,
+			&dst.PublicKey,
+		)
+	},
+		authNKeyUserQuery,
+		authz.GetInstance(ctx).InstanceID(),
+		keyID, userID,
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, zerrors.ThrowNotFound(err, "QUERY-Tha6f", "Errors.AuthNKey.NotFound")
+		}
+		return nil, zerrors.ThrowInternal(err, "QUERY-aen2A", "Errors.Internal")
+	}
+	return dst, nil
+}
+
+func prepareAuthNKeysQuery(ctx context.Context, db prepareDatabase) (sq.SelectBuilder, func(rows *sql.Rows) (*AuthNKeys, error)) {
 	return sq.Select(
 			AuthNKeyColumnID.identifier(),
 			AuthNKeyColumnCreationDate.identifier(),
+			AuthNKeyColumnChangeDate.identifier(),
 			AuthNKeyColumnResourceOwner.identifier(),
 			AuthNKeyColumnSequence.identifier(),
 			AuthNKeyColumnExpiration.identifier(),
 			AuthNKeyColumnType.identifier(),
 			countColumn.identifier(),
-		).From(authNKeyTable.identifier()).PlaceholderFormat(sq.Dollar),
+		).From(authNKeyTable.identifier() + db.Timetravel(call.Took(ctx))).
+			PlaceholderFormat(sq.Dollar),
 		func(rows *sql.Rows) (*AuthNKeys, error) {
 			authNKeys := make([]*AuthNKey, 0)
 			var count uint64
@@ -240,6 +308,7 @@ func prepareAuthNKeysQuery() (sq.SelectBuilder, func(rows *sql.Rows) (*AuthNKeys
 				err := rows.Scan(
 					&authNKey.ID,
 					&authNKey.CreationDate,
+					&authNKey.ChangeDate,
 					&authNKey.ResourceOwner,
 					&authNKey.Sequence,
 					&authNKey.Expiration,
@@ -253,7 +322,7 @@ func prepareAuthNKeysQuery() (sq.SelectBuilder, func(rows *sql.Rows) (*AuthNKeys
 			}
 
 			if err := rows.Close(); err != nil {
-				return nil, errors.ThrowInternal(err, "QUERY-Dgfn3", "Errors.Query.CloseRows")
+				return nil, zerrors.ThrowInternal(err, "QUERY-Dgfn3", "Errors.Query.CloseRows")
 			}
 
 			return &AuthNKeys{
@@ -265,58 +334,63 @@ func prepareAuthNKeysQuery() (sq.SelectBuilder, func(rows *sql.Rows) (*AuthNKeys
 		}
 }
 
-func prepareAuthNKeyQuery() (sq.SelectBuilder, func(row *sql.Row) (*AuthNKey, error)) {
+func prepareAuthNKeyQuery(ctx context.Context, db prepareDatabase) (sq.SelectBuilder, func(row *sql.Row) (*AuthNKey, error)) {
 	return sq.Select(
 			AuthNKeyColumnID.identifier(),
 			AuthNKeyColumnCreationDate.identifier(),
+			AuthNKeyColumnChangeDate.identifier(),
 			AuthNKeyColumnResourceOwner.identifier(),
 			AuthNKeyColumnSequence.identifier(),
 			AuthNKeyColumnExpiration.identifier(),
 			AuthNKeyColumnType.identifier(),
-		).From(authNKeyTable.identifier()).PlaceholderFormat(sq.Dollar),
+		).From(authNKeyTable.identifier() + db.Timetravel(call.Took(ctx))).
+			PlaceholderFormat(sq.Dollar),
 		func(row *sql.Row) (*AuthNKey, error) {
 			authNKey := new(AuthNKey)
 			err := row.Scan(
 				&authNKey.ID,
 				&authNKey.CreationDate,
+				&authNKey.ChangeDate,
 				&authNKey.ResourceOwner,
 				&authNKey.Sequence,
 				&authNKey.Expiration,
 				&authNKey.Type,
 			)
 			if err != nil {
-				if errs.Is(err, sql.ErrNoRows) {
-					return nil, errors.ThrowNotFound(err, "QUERY-Dgr3g", "Errors.AuthNKey.NotFound")
+				if errors.Is(err, sql.ErrNoRows) {
+					return nil, zerrors.ThrowNotFound(err, "QUERY-Dgr3g", "Errors.AuthNKey.NotFound")
 				}
-				return nil, errors.ThrowInternal(err, "QUERY-BGnbr", "Errors.Internal")
+				return nil, zerrors.ThrowInternal(err, "QUERY-BGnbr", "Errors.Internal")
 			}
 			return authNKey, nil
 		}
 }
 
-func prepareAuthNKeyPublicKeyQuery() (sq.SelectBuilder, func(row *sql.Row) ([]byte, error)) {
+func prepareAuthNKeyPublicKeyQuery(ctx context.Context, db prepareDatabase) (sq.SelectBuilder, func(row *sql.Row) ([]byte, error)) {
 	return sq.Select(
 			AuthNKeyColumnPublicKey.identifier(),
-		).From(authNKeyTable.identifier()).PlaceholderFormat(sq.Dollar),
+		).From(authNKeyTable.identifier() + db.Timetravel(call.Took(ctx))).
+			PlaceholderFormat(sq.Dollar),
 		func(row *sql.Row) ([]byte, error) {
 			var publicKey []byte
 			err := row.Scan(
 				&publicKey,
 			)
 			if err != nil {
-				if errs.Is(err, sql.ErrNoRows) {
-					return nil, errors.ThrowNotFound(err, "QUERY-SDf32", "Errors.AuthNKey.NotFound")
+				if errors.Is(err, sql.ErrNoRows) {
+					return nil, zerrors.ThrowNotFound(err, "QUERY-SDf32", "Errors.AuthNKey.NotFound")
 				}
-				return nil, errors.ThrowInternal(err, "QUERY-Bfs2a", "Errors.Internal")
+				return nil, zerrors.ThrowInternal(err, "QUERY-Bfs2a", "Errors.Internal")
 			}
 			return publicKey, nil
 		}
 }
 
-func prepareAuthNKeysDataQuery() (sq.SelectBuilder, func(rows *sql.Rows) (*AuthNKeysData, error)) {
+func prepareAuthNKeysDataQuery(ctx context.Context, db prepareDatabase) (sq.SelectBuilder, func(rows *sql.Rows) (*AuthNKeysData, error)) {
 	return sq.Select(
 			AuthNKeyColumnID.identifier(),
 			AuthNKeyColumnCreationDate.identifier(),
+			AuthNKeyColumnChangeDate.identifier(),
 			AuthNKeyColumnResourceOwner.identifier(),
 			AuthNKeyColumnSequence.identifier(),
 			AuthNKeyColumnExpiration.identifier(),
@@ -324,7 +398,8 @@ func prepareAuthNKeysDataQuery() (sq.SelectBuilder, func(rows *sql.Rows) (*AuthN
 			AuthNKeyColumnIdentifier.identifier(),
 			AuthNKeyColumnPublicKey.identifier(),
 			countColumn.identifier(),
-		).From(authNKeyTable.identifier()).PlaceholderFormat(sq.Dollar),
+		).From(authNKeyTable.identifier() + db.Timetravel(call.Took(ctx))).
+			PlaceholderFormat(sq.Dollar),
 		func(rows *sql.Rows) (*AuthNKeysData, error) {
 			authNKeys := make([]*AuthNKeyData, 0)
 			var count uint64
@@ -333,6 +408,7 @@ func prepareAuthNKeysDataQuery() (sq.SelectBuilder, func(rows *sql.Rows) (*AuthN
 				err := rows.Scan(
 					&authNKey.ID,
 					&authNKey.CreationDate,
+					&authNKey.ChangeDate,
 					&authNKey.ResourceOwner,
 					&authNKey.Sequence,
 					&authNKey.Expiration,
@@ -348,7 +424,7 @@ func prepareAuthNKeysDataQuery() (sq.SelectBuilder, func(rows *sql.Rows) (*AuthN
 			}
 
 			if err := rows.Close(); err != nil {
-				return nil, errors.ThrowInternal(err, "QUERY-Dgfn3", "Errors.Query.CloseRows")
+				return nil, zerrors.ThrowInternal(err, "QUERY-Dgfn3", "Errors.Query.CloseRows")
 			}
 
 			return &AuthNKeysData{

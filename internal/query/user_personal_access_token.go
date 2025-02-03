@@ -3,17 +3,19 @@ package query
 import (
 	"context"
 	"database/sql"
-	errs "errors"
+	"errors"
 	"time"
 
 	sq "github.com/Masterminds/squirrel"
+	"github.com/zitadel/logging"
 
 	"github.com/zitadel/zitadel/internal/api/authz"
+	"github.com/zitadel/zitadel/internal/api/call"
 	"github.com/zitadel/zitadel/internal/database"
-
+	"github.com/zitadel/zitadel/internal/eventstore/handler/v2"
 	"github.com/zitadel/zitadel/internal/query/projection"
-
-	"github.com/zitadel/zitadel/internal/errors"
+	"github.com/zitadel/zitadel/internal/telemetry/tracing"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 var (
@@ -57,6 +59,10 @@ var (
 		name:  projection.PersonalAccessTokenColumnSequence,
 		table: personalAccessTokensTable,
 	}
+	PersonalAccessTokenColumnOwnerRemoved = Column{
+		name:  projection.PersonalAccessTokenColumnOwnerRemoved,
+		table: personalAccessTokensTable,
+	}
 )
 
 type PersonalAccessTokens struct {
@@ -73,7 +79,7 @@ type PersonalAccessToken struct {
 
 	UserID     string
 	Expiration time.Time
-	Scopes     database.StringArray
+	Scopes     database.TextArray[string]
 }
 
 type PersonalAccessTokenSearchQueries struct {
@@ -81,46 +87,69 @@ type PersonalAccessTokenSearchQueries struct {
 	Queries []SearchQuery
 }
 
-func (q *Queries) PersonalAccessTokenByID(ctx context.Context, shouldTriggerBulk bool, id string, queries ...SearchQuery) (*PersonalAccessToken, error) {
+func (q *Queries) PersonalAccessTokenByID(ctx context.Context, shouldTriggerBulk bool, id string, withOwnerRemoved bool, queries ...SearchQuery) (pat *PersonalAccessToken, err error) {
+	ctx, span := tracing.NewSpan(ctx)
+	defer func() { span.EndWithError(err) }()
+
 	if shouldTriggerBulk {
-		projection.PersonalAccessTokenProjection.Trigger(ctx)
+		_, traceSpan := tracing.NewNamedSpan(ctx, "TriggerPersonalAccessTokenProjection")
+		ctx, err = projection.PersonalAccessTokenProjection.Trigger(ctx, handler.WithAwaitRunning())
+		logging.OnError(err).Debug("trigger failed")
+		traceSpan.EndWithError(err)
 	}
 
-	query, scan := preparePersonalAccessTokenQuery()
+	query, scan := preparePersonalAccessTokenQuery(ctx, q.client)
 	for _, q := range queries {
 		query = q.toQuery(query)
 	}
-	stmt, args, err := query.Where(sq.Eq{
+	eq := sq.Eq{
 		PersonalAccessTokenColumnID.identifier():         id,
 		PersonalAccessTokenColumnInstanceID.identifier(): authz.GetInstance(ctx).InstanceID(),
-	}).ToSql()
+	}
+	if !withOwnerRemoved {
+		eq[PersonalAccessTokenColumnOwnerRemoved.identifier()] = false
+	}
+	stmt, args, err := query.Where(eq).ToSql()
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "QUERY-Dgfb4", "Errors.Query.SQLStatment")
+		return nil, zerrors.ThrowInternal(err, "QUERY-Dgfb4", "Errors.Query.SQLStatment")
 	}
 
-	row := q.client.QueryRowContext(ctx, stmt, args...)
-	return scan(row)
-}
-
-func (q *Queries) SearchPersonalAccessTokens(ctx context.Context, queries *PersonalAccessTokenSearchQueries) (personalAccessTokens *PersonalAccessTokens, err error) {
-	query, scan := preparePersonalAccessTokensQuery()
-	stmt, args, err := queries.toQuery(query).
-		Where(sq.Eq{
-			PersonalAccessTokenColumnInstanceID.identifier(): authz.GetInstance(ctx).InstanceID(),
-		}).ToSql()
-	if err != nil {
-		return nil, errors.ThrowInvalidArgument(err, "QUERY-Hjw2w", "Errors.Query.InvalidRequest")
-	}
-
-	rows, err := q.client.QueryContext(ctx, stmt, args...)
-	if err != nil {
-		return nil, errors.ThrowInternal(err, "QUERY-Bmz63", "Errors.Internal")
-	}
-	personalAccessTokens, err = scan(rows)
+	err = q.client.QueryRowContext(ctx, func(row *sql.Row) error {
+		pat, err = scan(row)
+		return err
+	}, stmt, args...)
 	if err != nil {
 		return nil, err
 	}
-	personalAccessTokens.LatestSequence, err = q.latestSequence(ctx, personalAccessTokensTable)
+	return pat, nil
+}
+
+func (q *Queries) SearchPersonalAccessTokens(ctx context.Context, queries *PersonalAccessTokenSearchQueries, withOwnerRemoved bool) (personalAccessTokens *PersonalAccessTokens, err error) {
+	ctx, span := tracing.NewSpan(ctx)
+	defer func() { span.EndWithError(err) }()
+
+	query, scan := preparePersonalAccessTokensQuery(ctx, q.client)
+	eq := sq.Eq{
+		PersonalAccessTokenColumnInstanceID.identifier(): authz.GetInstance(ctx).InstanceID(),
+	}
+	if !withOwnerRemoved {
+		eq[PersonalAccessTokenColumnOwnerRemoved.identifier()] = false
+	}
+	stmt, args, err := queries.toQuery(query).Where(eq).ToSql()
+	if err != nil {
+		return nil, zerrors.ThrowInvalidArgument(err, "QUERY-Hjw2w", "Errors.Query.InvalidRequest")
+	}
+
+	err = q.client.QueryContext(ctx, func(rows *sql.Rows) error {
+		personalAccessTokens, err = scan(rows)
+		return err
+
+	}, stmt, args...)
+	if err != nil {
+		return nil, zerrors.ThrowInternal(err, "QUERY-Bmz63", "Errors.Internal")
+	}
+
+	personalAccessTokens.State, err = q.latestState(ctx, personalAccessTokensTable)
 	return personalAccessTokens, err
 }
 
@@ -149,7 +178,7 @@ func (q *PersonalAccessTokenSearchQueries) toQuery(query sq.SelectBuilder) sq.Se
 	return query
 }
 
-func preparePersonalAccessTokenQuery() (sq.SelectBuilder, func(*sql.Row) (*PersonalAccessToken, error)) {
+func preparePersonalAccessTokenQuery(ctx context.Context, db prepareDatabase) (sq.SelectBuilder, func(*sql.Row) (*PersonalAccessToken, error)) {
 	return sq.Select(
 			PersonalAccessTokenColumnID.identifier(),
 			PersonalAccessTokenColumnCreationDate.identifier(),
@@ -159,7 +188,8 @@ func preparePersonalAccessTokenQuery() (sq.SelectBuilder, func(*sql.Row) (*Perso
 			PersonalAccessTokenColumnUserID.identifier(),
 			PersonalAccessTokenColumnExpiration.identifier(),
 			PersonalAccessTokenColumnScopes.identifier()).
-			From(personalAccessTokensTable.identifier()).PlaceholderFormat(sq.Dollar),
+			From(personalAccessTokensTable.identifier() + db.Timetravel(call.Took(ctx))).
+			PlaceholderFormat(sq.Dollar),
 		func(row *sql.Row) (*PersonalAccessToken, error) {
 			p := new(PersonalAccessToken)
 			err := row.Scan(
@@ -173,16 +203,16 @@ func preparePersonalAccessTokenQuery() (sq.SelectBuilder, func(*sql.Row) (*Perso
 				&p.Scopes,
 			)
 			if err != nil {
-				if errs.Is(err, sql.ErrNoRows) {
-					return nil, errors.ThrowNotFound(err, "QUERY-fk2fs", "Errors.PersonalAccessToken.NotFound")
+				if errors.Is(err, sql.ErrNoRows) {
+					return nil, zerrors.ThrowNotFound(err, "QUERY-fRunu", "Errors.PersonalAccessToken.NotFound")
 				}
-				return nil, errors.ThrowInternal(err, "QUERY-dj2FF", "Errors.Internal")
+				return nil, zerrors.ThrowInternal(err, "QUERY-dj2FF", "Errors.Internal")
 			}
 			return p, nil
 		}
 }
 
-func preparePersonalAccessTokensQuery() (sq.SelectBuilder, func(*sql.Rows) (*PersonalAccessTokens, error)) {
+func preparePersonalAccessTokensQuery(ctx context.Context, db prepareDatabase) (sq.SelectBuilder, func(*sql.Rows) (*PersonalAccessTokens, error)) {
 	return sq.Select(
 			PersonalAccessTokenColumnID.identifier(),
 			PersonalAccessTokenColumnCreationDate.identifier(),
@@ -193,7 +223,8 @@ func preparePersonalAccessTokensQuery() (sq.SelectBuilder, func(*sql.Rows) (*Per
 			PersonalAccessTokenColumnExpiration.identifier(),
 			PersonalAccessTokenColumnScopes.identifier(),
 			countColumn.identifier()).
-			From(personalAccessTokensTable.identifier()).PlaceholderFormat(sq.Dollar),
+			From(personalAccessTokensTable.identifier() + db.Timetravel(call.Took(ctx))).
+			PlaceholderFormat(sq.Dollar),
 		func(rows *sql.Rows) (*PersonalAccessTokens, error) {
 			personalAccessTokens := make([]*PersonalAccessToken, 0)
 			var count uint64
@@ -217,7 +248,7 @@ func preparePersonalAccessTokensQuery() (sq.SelectBuilder, func(*sql.Rows) (*Per
 			}
 
 			if err := rows.Close(); err != nil {
-				return nil, errors.ThrowInternal(err, "QUERY-QMXJv", "Errors.Query.CloseRows")
+				return nil, zerrors.ThrowInternal(err, "QUERY-QMXJv", "Errors.Query.CloseRows")
 			}
 
 			return &PersonalAccessTokens{

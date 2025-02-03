@@ -9,7 +9,51 @@ import (
 	"testing"
 
 	"github.com/zitadel/zitadel/internal/crypto"
-	errs "github.com/zitadel/zitadel/internal/errors"
+	"github.com/zitadel/zitadel/internal/domain"
+	"github.com/zitadel/zitadel/internal/zerrors"
+)
+
+var (
+	prepareSMTPConfigStmt = `SELECT projections.smtp_configs5.creation_date,` +
+		` projections.smtp_configs5.change_date,` +
+		` projections.smtp_configs5.resource_owner,` +
+		` projections.smtp_configs5.sequence,` +
+		` projections.smtp_configs5.id,` +
+		` projections.smtp_configs5.state,` +
+		` projections.smtp_configs5.description,` +
+		` projections.smtp_configs5_smtp.id,` +
+		` projections.smtp_configs5_smtp.tls,` +
+		` projections.smtp_configs5_smtp.sender_address,` +
+		` projections.smtp_configs5_smtp.sender_name,` +
+		` projections.smtp_configs5_smtp.reply_to_address,` +
+		` projections.smtp_configs5_smtp.host,` +
+		` projections.smtp_configs5_smtp.username,` +
+		` projections.smtp_configs5_smtp.password,` +
+		` projections.smtp_configs5_http.id,` +
+		` projections.smtp_configs5_http.endpoint` +
+		` FROM projections.smtp_configs5` +
+		` LEFT JOIN projections.smtp_configs5_smtp ON projections.smtp_configs5.id = projections.smtp_configs5_smtp.id AND projections.smtp_configs5.instance_id = projections.smtp_configs5_smtp.instance_id` +
+		` LEFT JOIN projections.smtp_configs5_http ON projections.smtp_configs5.id = projections.smtp_configs5_http.id AND projections.smtp_configs5.instance_id = projections.smtp_configs5_http.instance_id` +
+		` AS OF SYSTEM TIME '-1 ms'`
+	prepareSMTPConfigCols = []string{
+		"creation_date",
+		"change_date",
+		"resource_owner",
+		"sequence",
+		"id",
+		"state",
+		"description",
+		"id",
+		"tls",
+		"sender_address",
+		"sender_name",
+		"reply_to_address",
+		"smtp_host",
+		"smtp_user",
+		"smtp_password",
+		"id",
+		"endpoint",
+	}
 )
 
 func Test_SMTPConfigsPrepares(t *testing.T) {
@@ -27,24 +71,13 @@ func Test_SMTPConfigsPrepares(t *testing.T) {
 			name:    "prepareSMTPConfigQuery no result",
 			prepare: prepareSMTPConfigQuery,
 			want: want{
-				sqlExpectations: mockQueries(
-					`SELECT projections.smtp_configs.aggregate_id,`+
-						` projections.smtp_configs.creation_date,`+
-						` projections.smtp_configs.change_date,`+
-						` projections.smtp_configs.resource_owner,`+
-						` projections.smtp_configs.sequence,`+
-						` projections.smtp_configs.tls,`+
-						` projections.smtp_configs.sender_address,`+
-						` projections.smtp_configs.sender_name,`+
-						` projections.smtp_configs.host,`+
-						` projections.smtp_configs.username,`+
-						` projections.smtp_configs.password`+
-						` FROM projections.smtp_configs`,
+				sqlExpectations: mockQueriesScanErr(
+					prepareSMTPConfigStmt,
 					nil,
 					nil,
 				),
 				err: func(err error) (error, bool) {
-					if !errs.IsNotFound(err) {
+					if !zerrors.IsNotFound(err) {
 						return fmt.Errorf("err should be zitadel.NotFoundError got: %w", err), false
 					}
 					return nil, true
@@ -57,58 +90,181 @@ func Test_SMTPConfigsPrepares(t *testing.T) {
 			prepare: prepareSMTPConfigQuery,
 			want: want{
 				sqlExpectations: mockQuery(
-					regexp.QuoteMeta(`SELECT projections.smtp_configs.aggregate_id,`+
-						` projections.smtp_configs.creation_date,`+
-						` projections.smtp_configs.change_date,`+
-						` projections.smtp_configs.resource_owner,`+
-						` projections.smtp_configs.sequence,`+
-						` projections.smtp_configs.tls,`+
-						` projections.smtp_configs.sender_address,`+
-						` projections.smtp_configs.sender_name,`+
-						` projections.smtp_configs.host,`+
-						` projections.smtp_configs.username,`+
-						` projections.smtp_configs.password`+
-						` FROM projections.smtp_configs`),
-					[]string{
-						"aggregate_id",
-						"creation_date",
-						"change_date",
-						"resource_owner",
-						"sequence",
-						"tls",
-						"sender_address",
-						"sender_name",
-						"smtp_host",
-						"smtp_user",
-						"smtp_password",
-					},
+					regexp.QuoteMeta(prepareSMTPConfigStmt),
+					prepareSMTPConfigCols,
 					[]driver.Value{
-						"agg-id",
 						testNow,
 						testNow,
 						"ro",
 						uint64(20211108),
+						"2232323",
+						domain.SMTPConfigStateActive,
+						"test",
+						"2232323",
 						true,
 						"sender",
 						"name",
+						"reply-to",
 						"host",
 						"user",
 						&crypto.CryptoValue{},
+						nil,
+						nil,
 					},
 				),
 			},
 			object: &SMTPConfig{
-				AggregateID:   "agg-id",
 				CreationDate:  testNow,
 				ChangeDate:    testNow,
 				ResourceOwner: "ro",
 				Sequence:      20211108,
-				TLS:           true,
-				SenderAddress: "sender",
-				SenderName:    "name",
-				Host:          "host",
-				User:          "user",
-				Password:      &crypto.CryptoValue{},
+				SMTPConfig: &SMTP{
+					TLS:            true,
+					SenderAddress:  "sender",
+					SenderName:     "name",
+					ReplyToAddress: "reply-to",
+					Host:           "host",
+					User:           "user",
+					Password:       &crypto.CryptoValue{},
+				},
+				ID:          "2232323",
+				State:       domain.SMTPConfigStateActive,
+				Description: "test",
+			},
+		},
+		{
+			name:    "prepareSMTPConfigQuery found, http",
+			prepare: prepareSMTPConfigQuery,
+			want: want{
+				sqlExpectations: mockQuery(
+					regexp.QuoteMeta(prepareSMTPConfigStmt),
+					prepareSMTPConfigCols,
+					[]driver.Value{
+						testNow,
+						testNow,
+						"ro",
+						uint64(20211108),
+						"2232323",
+						domain.SMTPConfigStateActive,
+						"test",
+						nil,
+						nil,
+						nil,
+						nil,
+						nil,
+						nil,
+						nil,
+						nil,
+						"2232323",
+						"endpoint",
+					},
+				),
+			},
+			object: &SMTPConfig{
+				CreationDate:  testNow,
+				ChangeDate:    testNow,
+				ResourceOwner: "ro",
+				Sequence:      20211108,
+				HTTPConfig: &HTTP{
+					Endpoint: "endpoint",
+				},
+				ID:          "2232323",
+				State:       domain.SMTPConfigStateActive,
+				Description: "test",
+			},
+		},
+		{
+			name:    "prepareSMTPConfigQuery another config found",
+			prepare: prepareSMTPConfigQuery,
+			want: want{
+				sqlExpectations: mockQuery(
+					regexp.QuoteMeta(prepareSMTPConfigStmt),
+					prepareSMTPConfigCols,
+					[]driver.Value{
+						testNow,
+						testNow,
+						"ro",
+						uint64(20211109),
+						"44442323",
+						domain.SMTPConfigStateInactive,
+						"test2",
+						"44442323",
+						true,
+						"sender2",
+						"name2",
+						"reply-to2",
+						"host2",
+						"user2",
+						&crypto.CryptoValue{},
+						nil,
+						nil,
+					},
+				),
+			},
+			object: &SMTPConfig{
+				CreationDate:  testNow,
+				ChangeDate:    testNow,
+				ResourceOwner: "ro",
+				Sequence:      20211109,
+				SMTPConfig: &SMTP{
+					TLS:            true,
+					SenderAddress:  "sender2",
+					SenderName:     "name2",
+					ReplyToAddress: "reply-to2",
+					Host:           "host2",
+					User:           "user2",
+					Password:       &crypto.CryptoValue{},
+				},
+				ID:          "44442323",
+				State:       domain.SMTPConfigStateInactive,
+				Description: "test2",
+			},
+		},
+		{
+			name:    "prepareSMTPConfigQuery yet another config found",
+			prepare: prepareSMTPConfigQuery,
+			want: want{
+				sqlExpectations: mockQuery(
+					regexp.QuoteMeta(prepareSMTPConfigStmt),
+					prepareSMTPConfigCols,
+					[]driver.Value{
+						testNow,
+						testNow,
+						"ro",
+						uint64(20211109),
+						"23234444",
+						domain.SMTPConfigStateInactive,
+						"test3",
+						"23234444",
+						true,
+						"sender3",
+						"name3",
+						"reply-to3",
+						"host3",
+						"user3",
+						&crypto.CryptoValue{},
+						nil,
+						nil,
+					},
+				),
+			},
+			object: &SMTPConfig{
+				CreationDate:  testNow,
+				ChangeDate:    testNow,
+				ResourceOwner: "ro",
+				Sequence:      20211109,
+				SMTPConfig: &SMTP{
+					TLS:            true,
+					SenderAddress:  "sender3",
+					SenderName:     "name3",
+					ReplyToAddress: "reply-to3",
+					Host:           "host3",
+					User:           "user3",
+					Password:       &crypto.CryptoValue{},
+				},
+				ID:          "23234444",
+				State:       domain.SMTPConfigStateInactive,
+				Description: "test3",
 			},
 		},
 		{
@@ -116,18 +272,7 @@ func Test_SMTPConfigsPrepares(t *testing.T) {
 			prepare: prepareSMTPConfigQuery,
 			want: want{
 				sqlExpectations: mockQueryErr(
-					regexp.QuoteMeta(`SELECT projections.smtp_configs.aggregate_id,`+
-						` projections.smtp_configs.creation_date,`+
-						` projections.smtp_configs.change_date,`+
-						` projections.smtp_configs.resource_owner,`+
-						` projections.smtp_configs.sequence,`+
-						` projections.smtp_configs.tls,`+
-						` projections.smtp_configs.sender_address,`+
-						` projections.smtp_configs.sender_name,`+
-						` projections.smtp_configs.host,`+
-						` projections.smtp_configs.username,`+
-						` projections.smtp_configs.password`+
-						` FROM projections.smtp_configs`),
+					regexp.QuoteMeta(prepareSMTPConfigStmt),
 					sql.ErrConnDone,
 				),
 				err: func(err error) (error, bool) {
@@ -137,12 +282,12 @@ func Test_SMTPConfigsPrepares(t *testing.T) {
 					return nil, true
 				},
 			},
-			object: nil,
+			object: (*SMTPConfig)(nil),
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assertPrepare(t, tt.prepare, tt.object, tt.want.sqlExpectations, tt.want.err)
+			assertPrepare(t, tt.prepare, tt.object, tt.want.sqlExpectations, tt.want.err, defaultPrepareArgs...)
 		})
 	}
 }

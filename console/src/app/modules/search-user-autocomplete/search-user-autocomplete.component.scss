@@ -1,11 +1,16 @@
-@use '@angular/material' as mat;
-
 @mixin search-user-autocomplete-theme($theme) {
   $primary: map-get($theme, primary);
-  $primary-color: mat.get-color-from-palette($primary, 500);
+  $primary-color: map-get($primary, 500);
+  $lighter-primary-color: map-get($primary, 300);
+  $darker-primary-color: map-get($primary, 700);
+
   $background: map-get($theme, background);
   $foreground: map-get($theme, foreground);
   $secondary-text: map-get($foreground, secondary-text);
+  $is-dark-theme: map-get($theme, is-dark);
+
+  $link-hover-color: if($is-dark-theme, map-get($primary, 200), $primary-color);
+  $link-color: if($is-dark-theme, $lighter-primary-color, $primary-color);
 
   .user-autocomplete-found {
     margin: 0.5rem 0;
@@ -67,11 +72,12 @@
     margin-top: 0.5rem;
 
     a {
-      color: $primary-color;
+      color: $link-color;
+      transition: color 0.2s ease;
 
       &:hover {
         cursor: pointer;
-        color: mat.get-color-from-palette($primary, 400);
+        color: $link-hover-color;
         text-decoration: underline;
       }
     }

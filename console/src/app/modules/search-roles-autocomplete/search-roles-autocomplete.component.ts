@@ -14,7 +14,6 @@ import { ManagementService } from 'src/app/services/mgmt.service';
   styleUrls: ['./search-roles-autocomplete.component.scss'],
 })
 export class SearchRolesAutocompleteComponent implements OnDestroy {
-  public selectable: boolean = true;
   public removable: boolean = true;
   public addOnBlur: boolean = true;
   public separatorKeysCodes: number[] = [ENTER, COMMA];

@@ -10,7 +10,7 @@ import (
 	"github.com/zitadel/zitadel/cmd/tls"
 )
 
-func NewStartFromSetup() *cobra.Command {
+func NewStartFromSetup(server chan<- *Server) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "start-from-setup",
 		Short: "cold starts zitadel",
@@ -29,13 +29,16 @@ Requirements:
 			masterKey, err := key.MasterKey(cmd)
 			logging.OnError(err).Panic("No master key provided")
 
+			err = setup.BindInitProjections(cmd)
+			logging.OnError(err).Fatal("unable to bind \"init-projections\" flag")
+
 			setupConfig := setup.MustNewConfig(viper.GetViper())
 			setupSteps := setup.MustNewSteps(viper.New())
-			setup.Setup(setupConfig, setupSteps, masterKey)
+			setup.Setup(cmd.Context(), setupConfig, setupSteps, masterKey)
 
 			startConfig := MustNewConfig(viper.GetViper())
 
-			err = startZitadel(startConfig, masterKey)
+			err = startZitadel(cmd.Context(), startConfig, masterKey, server)
 			logging.OnError(err).Fatal("unable to start zitadel")
 		},
 	}

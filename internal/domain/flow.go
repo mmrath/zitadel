@@ -1,6 +1,9 @@
 package domain
 
-import "strconv"
+import (
+	"slices"
+	"strconv"
+)
 
 type FlowState int32
 
@@ -20,8 +23,19 @@ const (
 	FlowTypeUnspecified FlowType = iota
 	FlowTypeExternalAuthentication
 	FlowTypeCustomiseToken
+	FlowTypeInternalAuthentication
+	FlowTypeCustomizeSAMLResponse
 	flowTypeCount
 )
+
+func AllFlowTypes() []FlowType {
+	return []FlowType{
+		FlowTypeExternalAuthentication,
+		FlowTypeCustomiseToken,
+		FlowTypeInternalAuthentication,
+		FlowTypeCustomizeSAMLResponse,
+	}
+}
 
 func (s FlowType) Valid() bool {
 	return s > 0 && s < flowTypeCount
@@ -49,6 +63,16 @@ func (s FlowType) TriggerTypes() []TriggerType {
 			TriggerTypePreUserinfoCreation,
 			TriggerTypePreAccessTokenCreation,
 		}
+	case FlowTypeInternalAuthentication:
+		return []TriggerType{
+			TriggerTypePostAuthentication,
+			TriggerTypePreCreation,
+			TriggerTypePostCreation,
+		}
+	case FlowTypeCustomizeSAMLResponse:
+		return []TriggerType{
+			TriggerTypePreSAMLResponseCreation,
+		}
 	default:
 		return nil
 	}
@@ -71,6 +95,10 @@ func (s FlowType) LocalizationKey() string {
 		return "Action.Flow.Type.ExternalAuthentication"
 	case FlowTypeCustomiseToken:
 		return "Action.Flow.Type.CustomiseToken"
+	case FlowTypeInternalAuthentication:
+		return "Action.Flow.Type.InternalAuthentication"
+	case FlowTypeCustomizeSAMLResponse:
+		return "Action.Flow.Type.CustomizeSAMLResponse"
 	default:
 		return "Action.Flow.Type.Unspecified"
 	}
@@ -85,6 +113,7 @@ const (
 	TriggerTypePostCreation
 	TriggerTypePreUserinfoCreation
 	TriggerTypePreAccessTokenCreation
+	TriggerTypePreSAMLResponseCreation
 	triggerTypeCount
 )
 
@@ -115,7 +144,26 @@ func (s TriggerType) LocalizationKey() string {
 		return "Action.TriggerType.PreUserinfoCreation"
 	case TriggerTypePreAccessTokenCreation:
 		return "Action.TriggerType.PreAccessTokenCreation"
+	case TriggerTypePreSAMLResponseCreation:
+		return "Action.TriggerType.PreSAMLResponseCreation"
 	default:
 		return "Action.TriggerType.Unspecified"
+	}
+}
+
+func AllFunctions() []string {
+	functions := make([]string, 0)
+	for _, flowType := range AllFlowTypes() {
+		for _, triggerType := range flowType.TriggerTypes() {
+			functions = append(functions, flowType.LocalizationKey()+"."+triggerType.LocalizationKey())
+		}
+	}
+	return functions
+}
+
+func FunctionExists() func(string) bool {
+	functions := AllFunctions()
+	return func(s string) bool {
+		return slices.Contains(functions, s)
 	}
 }

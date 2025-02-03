@@ -3,15 +3,17 @@ package query
 import (
 	"context"
 	"database/sql"
-	errs "errors"
+	"errors"
 	"time"
 
 	sq "github.com/Masterminds/squirrel"
 
 	"github.com/zitadel/zitadel/internal/api/authz"
+	"github.com/zitadel/zitadel/internal/api/call"
 	"github.com/zitadel/zitadel/internal/domain"
-	"github.com/zitadel/zitadel/internal/errors"
 	"github.com/zitadel/zitadel/internal/query/projection"
+	"github.com/zitadel/zitadel/internal/telemetry/tracing"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 const (
@@ -67,6 +69,10 @@ var (
 		name:  projection.ActionAllowedToFailCol,
 		table: actionTable,
 	}
+	ActionColumnOwnerRemoved = Column{
+		name:  projection.ActionOwnerRemovedCol,
+		table: actionTable,
+	}
 )
 
 type Actions struct {
@@ -108,43 +114,57 @@ func (q *ActionSearchQueries) toQuery(query sq.SelectBuilder) sq.SelectBuilder {
 	return query
 }
 
-func (q *Queries) SearchActions(ctx context.Context, queries *ActionSearchQueries) (actions *Actions, err error) {
-	query, scan := prepareActionsQuery()
-	stmt, args, err := queries.toQuery(query).
-		Where(sq.Eq{
-			ActionColumnInstanceID.identifier(): authz.GetInstance(ctx).InstanceID(),
-		}).
-		ToSql()
+func (q *Queries) SearchActions(ctx context.Context, queries *ActionSearchQueries, withOwnerRemoved bool) (actions *Actions, err error) {
+	ctx, span := tracing.NewSpan(ctx)
+	defer func() { span.EndWithError(err) }()
+
+	query, scan := prepareActionsQuery(ctx, q.client)
+	eq := sq.Eq{
+		ActionColumnInstanceID.identifier(): authz.GetInstance(ctx).InstanceID(),
+	}
+	if !withOwnerRemoved {
+		eq[ActionColumnOwnerRemoved.identifier()] = false
+	}
+	stmt, args, err := queries.toQuery(query).Where(eq).ToSql()
 	if err != nil {
-		return nil, errors.ThrowInvalidArgument(err, "QUERY-SDgwg", "Errors.Query.InvalidRequest")
+		return nil, zerrors.ThrowInvalidArgument(err, "QUERY-SDgwg", "Errors.Query.InvalidRequest")
 	}
 
-	rows, err := q.client.QueryContext(ctx, stmt, args...)
+	err = q.client.QueryContext(ctx, func(rows *sql.Rows) error {
+		actions, err = scan(rows)
+		return err
+	}, stmt, args...)
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "QUERY-SDfr52", "Errors.Internal")
+		return nil, zerrors.ThrowInternal(err, "QUERY-SDfr52", "Errors.Internal")
 	}
-	actions, err = scan(rows)
-	if err != nil {
-		return nil, err
-	}
-	actions.LatestSequence, err = q.latestSequence(ctx, actionTable)
+
+	actions.State, err = q.latestState(ctx, actionTable)
 	return actions, err
 }
 
-func (q *Queries) GetActionByID(ctx context.Context, id string, orgID string) (*Action, error) {
-	stmt, scan := prepareActionQuery()
-	query, args, err := stmt.Where(
-		sq.Eq{
-			ActionColumnID.identifier():            id,
-			ActionColumnResourceOwner.identifier(): orgID,
-			ActionColumnInstanceID.identifier():    authz.GetInstance(ctx).InstanceID(),
-		}).ToSql()
+func (q *Queries) GetActionByID(ctx context.Context, id string, orgID string, withOwnerRemoved bool) (action *Action, err error) {
+	ctx, span := tracing.NewSpan(ctx)
+	defer func() { span.EndWithError(err) }()
+
+	stmt, scan := prepareActionQuery(ctx, q.client)
+	eq := sq.Eq{
+		ActionColumnID.identifier():            id,
+		ActionColumnResourceOwner.identifier(): orgID,
+		ActionColumnInstanceID.identifier():    authz.GetInstance(ctx).InstanceID(),
+	}
+	if !withOwnerRemoved {
+		eq[ActionColumnOwnerRemoved.identifier()] = false
+	}
+	query, args, err := stmt.Where(eq).ToSql()
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "QUERY-Dgff3", "Errors.Query.SQLStatement")
+		return nil, zerrors.ThrowInternal(err, "QUERY-Dgff3", "Errors.Query.SQLStatement")
 	}
 
-	row := q.client.QueryRowContext(ctx, query, args...)
-	return scan(row)
+	err = q.client.QueryRowContext(ctx, func(row *sql.Row) error {
+		action, err = scan(row)
+		return err
+	}, query, args...)
+	return action, err
 }
 
 func NewActionResourceOwnerQuery(id string) (SearchQuery, error) {
@@ -163,7 +183,7 @@ func NewActionIDSearchQuery(id string) (SearchQuery, error) {
 	return NewTextQuery(ActionColumnID, id, TextEquals)
 }
 
-func prepareActionsQuery() (sq.SelectBuilder, func(rows *sql.Rows) (*Actions, error)) {
+func prepareActionsQuery(ctx context.Context, db prepareDatabase) (sq.SelectBuilder, func(rows *sql.Rows) (*Actions, error)) {
 	return sq.Select(
 			ActionColumnID.identifier(),
 			ActionColumnCreationDate.identifier(),
@@ -176,7 +196,8 @@ func prepareActionsQuery() (sq.SelectBuilder, func(rows *sql.Rows) (*Actions, er
 			ActionColumnTimeout.identifier(),
 			ActionColumnAllowedToFail.identifier(),
 			countColumn.identifier(),
-		).From(actionTable.identifier()).PlaceholderFormat(sq.Dollar),
+		).From(actionTable.identifier() + db.Timetravel(call.Took(ctx))).
+			PlaceholderFormat(sq.Dollar),
 		func(rows *sql.Rows) (*Actions, error) {
 			actions := make([]*Action, 0)
 			var count uint64
@@ -202,7 +223,7 @@ func prepareActionsQuery() (sq.SelectBuilder, func(rows *sql.Rows) (*Actions, er
 			}
 
 			if err := rows.Close(); err != nil {
-				return nil, errors.ThrowInternal(err, "QUERY-EGdff", "Errors.Query.CloseRows")
+				return nil, zerrors.ThrowInternal(err, "QUERY-EGdff", "Errors.Query.CloseRows")
 			}
 
 			return &Actions{
@@ -214,7 +235,7 @@ func prepareActionsQuery() (sq.SelectBuilder, func(rows *sql.Rows) (*Actions, er
 		}
 }
 
-func prepareActionQuery() (sq.SelectBuilder, func(row *sql.Row) (*Action, error)) {
+func prepareActionQuery(ctx context.Context, db prepareDatabase) (sq.SelectBuilder, func(row *sql.Row) (*Action, error)) {
 	return sq.Select(
 			ActionColumnID.identifier(),
 			ActionColumnCreationDate.identifier(),
@@ -226,7 +247,8 @@ func prepareActionQuery() (sq.SelectBuilder, func(row *sql.Row) (*Action, error)
 			ActionColumnScript.identifier(),
 			ActionColumnTimeout.identifier(),
 			ActionColumnAllowedToFail.identifier(),
-		).From(actionTable.identifier()).PlaceholderFormat(sq.Dollar),
+		).From(actionTable.identifier() + db.Timetravel(call.Took(ctx))).
+			PlaceholderFormat(sq.Dollar),
 		func(row *sql.Row) (*Action, error) {
 			action := new(Action)
 			err := row.Scan(
@@ -242,10 +264,10 @@ func prepareActionQuery() (sq.SelectBuilder, func(row *sql.Row) (*Action, error)
 				&action.AllowedToFail,
 			)
 			if err != nil {
-				if errs.Is(err, sql.ErrNoRows) {
-					return nil, errors.ThrowNotFound(err, "QUERY-GEfnb", "Errors.Action.NotFound")
+				if errors.Is(err, sql.ErrNoRows) {
+					return nil, zerrors.ThrowNotFound(err, "QUERY-GEfnb", "Errors.Action.NotFound")
 				}
-				return nil, errors.ThrowInternal(err, "QUERY-Dbnt4", "Errors.Internal")
+				return nil, zerrors.ThrowInternal(err, "QUERY-Dbnt4", "Errors.Internal")
 			}
 			return action, nil
 		}

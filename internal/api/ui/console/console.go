@@ -1,9 +1,11 @@
 package console
 
 import (
+	"bytes"
 	"embed"
 	"encoding/json"
 	"fmt"
+	"html/template"
 	"io/fs"
 	"net/http"
 	"os"
@@ -13,17 +15,23 @@ import (
 
 	"github.com/gorilla/mux"
 	"github.com/zitadel/logging"
-	"github.com/zitadel/oidc/v2/pkg/op"
+	"github.com/zitadel/oidc/v3/pkg/op"
 
 	"github.com/zitadel/zitadel/cmd/build"
 	"github.com/zitadel/zitadel/internal/api/authz"
 	http_util "github.com/zitadel/zitadel/internal/api/http"
 	"github.com/zitadel/zitadel/internal/api/http/middleware"
+	console_path "github.com/zitadel/zitadel/internal/api/ui/console/path"
 )
 
 type Config struct {
-	ShortCache middleware.CacheConfig
-	LongCache  middleware.CacheConfig
+	ShortCache            middleware.CacheConfig
+	LongCache             middleware.CacheConfig
+	InstanceManagementURL string
+	PostHog               struct {
+		Token string
+		URL   string
+	}
 }
 
 type spaHandler struct {
@@ -31,13 +39,14 @@ type spaHandler struct {
 }
 
 var (
-	//go:embed static/*
+	//go:embed static
 	static embed.FS
 )
 
 const (
 	envRequestPath = "/assets/environment.json"
-	HandlerPrefix  = "/ui/console"
+	// https://posthog.com/docs/advanced/content-security-policy
+	posthogCSPHost = "https://*.i.posthog.com"
 )
 
 var (
@@ -51,6 +60,10 @@ var (
 		"/worker-basic.min.js",
 	}
 )
+
+func LoginHintLink(origin, username string) string {
+	return origin + console_path.HandlerPrefix + "?login_hint=" + username
+}
 
 func (i *spaHandler) Open(name string) (http.File, error) {
 	ret, err := i.fileSystem.Open(name)
@@ -84,7 +97,7 @@ func (f *file) Stat() (_ fs.FileInfo, err error) {
 	return f, nil
 }
 
-func Start(config Config, externalSecure bool, issuer op.IssuerFromRequest, instanceHandler func(http.Handler) http.Handler, customerPortal string) (http.Handler, error) {
+func Start(config Config, externalSecure bool, issuer op.IssuerFromRequest, callDurationInterceptor, instanceHandler func(http.Handler) http.Handler, limitingAccessInterceptor *middleware.AccessInterceptor, customerPortal string) (http.Handler, error) {
 	fSys, err := fs.Sub(static, "static")
 	if err != nil {
 		return nil, err
@@ -95,14 +108,22 @@ func Start(config Config, externalSecure bool, issuer op.IssuerFromRequest, inst
 		config.LongCache.MaxAge,
 		config.LongCache.SharedMaxAge,
 	)
-	security := middleware.SecurityHeaders(csp(), nil)
+	security := middleware.SecurityHeaders(csp(config.PostHog.URL), nil)
 
 	handler := mux.NewRouter()
 
-	handler.Use(security, instanceHandler)
+	handler.Use(callDurationInterceptor, instanceHandler, security, limitingAccessInterceptor.WithoutLimiting().Handle)
 	handler.Handle(envRequestPath, middleware.TelemetryHandler()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		url := http_util.BuildOrigin(r.Host, externalSecure)
-		environmentJSON, err := createEnvironmentJSON(url, issuer(r), authz.GetInstance(r.Context()).ConsoleClientID(), customerPortal)
+		ctx := r.Context()
+		instance := authz.GetInstance(ctx)
+		instanceMgmtURL, err := templateInstanceManagementURL(config.InstanceManagementURL, instance)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("unable to template instance management url for console: %v", err), http.StatusInternalServerError)
+			return
+		}
+		limited := limitingAccessInterceptor.Limit(w, r)
+		environmentJSON, err := createEnvironmentJSON(url, issuer(r), instance.ConsoleClientID(), customerPortal, instanceMgmtURL, config.PostHog.URL, config.PostHog.Token, limited)
 		if err != nil {
 			http.Error(w, fmt.Sprintf("unable to marshal env for console: %v", err), http.StatusInternalServerError)
 			return
@@ -114,26 +135,56 @@ func Start(config Config, externalSecure bool, issuer op.IssuerFromRequest, inst
 	return handler, nil
 }
 
-func csp() *middleware.CSP {
+func templateInstanceManagementURL(templateableCookieValue string, instance authz.Instance) (string, error) {
+	cookieValueTemplate, err := template.New("cookievalue").Parse(templateableCookieValue)
+	if err != nil {
+		return templateableCookieValue, err
+	}
+	cookieValue := new(bytes.Buffer)
+	if err = cookieValueTemplate.Execute(cookieValue, instance); err != nil {
+		return templateableCookieValue, err
+	}
+	return cookieValue.String(), nil
+}
+
+func csp(posthogURL string) *middleware.CSP {
 	csp := middleware.DefaultSCP
 	csp.StyleSrc = csp.StyleSrc.AddInline()
 	csp.ScriptSrc = csp.ScriptSrc.AddEval()
 	csp.ConnectSrc = csp.ConnectSrc.AddOwnHost()
 	csp.ImgSrc = csp.ImgSrc.AddOwnHost().AddScheme("blob")
+	if posthogURL != "" {
+		// https://posthog.com/docs/advanced/content-security-policy#enabling-the-toolbar
+		csp.ScriptSrc = csp.ScriptSrc.AddHost(posthogCSPHost)
+		csp.ConnectSrc = csp.ConnectSrc.AddHost(posthogCSPHost)
+		csp.ImgSrc = csp.ImgSrc.AddHost(posthogCSPHost)
+		csp.StyleSrc = csp.StyleSrc.AddHost(posthogCSPHost)
+		csp.FontSrc = csp.FontSrc.AddHost(posthogCSPHost)
+		csp.MediaSrc = middleware.CSPSourceOpts().AddHost(posthogCSPHost)
+	}
+
 	return &csp
 }
 
-func createEnvironmentJSON(api, issuer, clientID, customerPortal string) ([]byte, error) {
+func createEnvironmentJSON(api, issuer, clientID, customerPortal, instanceMgmtUrl, postHogURL, postHogToken string, exhausted bool) ([]byte, error) {
 	environment := struct {
-		API            string `json:"api,omitempty"`
-		Issuer         string `json:"issuer,omitempty"`
-		ClientID       string `json:"clientid,omitempty"`
-		CustomerPortal string `json:"customer_portal,omitempty"`
+		API                   string `json:"api,omitempty"`
+		Issuer                string `json:"issuer,omitempty"`
+		ClientID              string `json:"clientid,omitempty"`
+		CustomerPortal        string `json:"customer_portal,omitempty"`
+		InstanceManagementURL string `json:"instance_management_url,omitempty"`
+		PostHogURL            string `json:"posthog_url,omitempty"`
+		PostHogToken          string `json:"posthog_token,omitempty"`
+		Exhausted             bool   `json:"exhausted,omitempty"`
 	}{
-		API:            api,
-		Issuer:         issuer,
-		ClientID:       clientID,
-		CustomerPortal: customerPortal,
+		API:                   api,
+		Issuer:                issuer,
+		ClientID:              clientID,
+		CustomerPortal:        customerPortal,
+		InstanceManagementURL: instanceMgmtUrl,
+		PostHogURL:            postHogURL,
+		PostHogToken:          postHogToken,
+		Exhausted:             exhausted,
 	}
 	return json.Marshal(environment)
 }

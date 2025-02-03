@@ -1,9 +1,10 @@
 package user
 
 import (
+	"google.golang.org/protobuf/types/known/timestamppb"
+
 	"github.com/zitadel/zitadel/internal/api/grpc/object"
 	"github.com/zitadel/zitadel/internal/domain"
-	"github.com/zitadel/zitadel/internal/eventstore/v1/models"
 	"github.com/zitadel/zitadel/internal/query"
 	user_pb "github.com/zitadel/zitadel/pkg/grpc/user"
 )
@@ -15,6 +16,7 @@ func UsersToPb(users []*query.User, assetPrefix string) []*user_pb.User {
 	}
 	return u
 }
+
 func UserToPb(user *query.User, assetPrefix string) *user_pb.User {
 	return &user_pb.User{
 		Id:                 user.ID,
@@ -47,6 +49,10 @@ func UserTypeToPb(user *query.User, assetPrefix string) user_pb.UserType {
 }
 
 func HumanToPb(view *query.Human, assetPrefix, owner string) *user_pb.Human {
+	var passwordChanged *timestamppb.Timestamp
+	if !view.PasswordChanged.IsZero() {
+		passwordChanged = timestamppb.New(view.PasswordChanged)
+	}
 	return &user_pb.Human{
 		Profile: &user_pb.Profile{
 			FirstName:         view.FirstName,
@@ -58,20 +64,23 @@ func HumanToPb(view *query.Human, assetPrefix, owner string) *user_pb.Human {
 			AvatarUrl:         domain.AvatarURL(assetPrefix, owner, view.AvatarKey),
 		},
 		Email: &user_pb.Email{
-			Email:           view.Email,
+			Email:           string(view.Email),
 			IsEmailVerified: view.IsEmailVerified,
 		},
 		Phone: &user_pb.Phone{
-			Phone:           view.Phone,
+			Phone:           string(view.Phone),
 			IsPhoneVerified: view.IsPhoneVerified,
 		},
+		PasswordChanged: passwordChanged,
 	}
 }
 
 func MachineToPb(view *query.Machine) *user_pb.Machine {
 	return &user_pb.Machine{
-		Name:        view.Name,
-		Description: view.Description,
+		Name:            view.Name,
+		Description:     view.Description,
+		HasSecret:       view.EncodedSecret != "",
+		AccessTokenType: AccessTokenTypeToPb(view.AccessTokenType),
 	}
 }
 
@@ -89,7 +98,7 @@ func ProfileToPb(profile *query.Profile, assetPrefix string) *user_pb.Profile {
 
 func EmailToPb(email *query.Email) *user_pb.Email {
 	return &user_pb.Email{
-		Email:           email.Email,
+		Email:           string(email.Email),
 		IsEmailVerified: email.IsVerified,
 	}
 }
@@ -103,7 +112,7 @@ func PhoneToPb(phone *query.Phone) *user_pb.Phone {
 
 func ModelEmailToPb(email *query.Email) *user_pb.Email {
 	return &user_pb.Email{
-		Email:           email.Email,
+		Email:           string(email.Email),
 		IsEmailVerified: email.IsVerified,
 	}
 }
@@ -123,6 +132,17 @@ func GenderToDomain(gender user_pb.Gender) domain.Gender {
 		return domain.GenderMale
 	case user_pb.Gender_GENDER_FEMALE:
 		return domain.GenderFemale
+	default:
+		return -1
+	}
+}
+
+func AccessTokenTypeToDomain(accessTokenType user_pb.AccessTokenType) domain.OIDCTokenType {
+	switch accessTokenType {
+	case user_pb.AccessTokenType_ACCESS_TOKEN_TYPE_BEARER:
+		return domain.OIDCTokenTypeBearer
+	case user_pb.AccessTokenType_ACCESS_TOKEN_TYPE_JWT:
+		return domain.OIDCTokenTypeJWT
 	default:
 		return -1
 	}
@@ -160,6 +180,17 @@ func GenderToPb(gender domain.Gender) user_pb.Gender {
 	}
 }
 
+func AccessTokenTypeToPb(accessTokenType domain.OIDCTokenType) user_pb.AccessTokenType {
+	switch accessTokenType {
+	case domain.OIDCTokenTypeBearer:
+		return user_pb.AccessTokenType_ACCESS_TOKEN_TYPE_BEARER
+	case domain.OIDCTokenTypeJWT:
+		return user_pb.AccessTokenType_ACCESS_TOKEN_TYPE_JWT
+	default:
+		return user_pb.AccessTokenType_ACCESS_TOKEN_TYPE_BEARER
+	}
+}
+
 func AuthMethodsToPb(mfas *query.AuthMethods) []*user_pb.AuthFactor {
 	factors := make([]*user_pb.AuthFactor, len(mfas.AuthMethods))
 	for i, mfa := range mfas.AuthMethods {
@@ -173,7 +204,7 @@ func AuthMethodToPb(mfa *query.AuthMethod) *user_pb.AuthFactor {
 		State: MFAStateToPb(mfa.State),
 	}
 	switch mfa.Type {
-	case domain.UserAuthMethodTypeOTP:
+	case domain.UserAuthMethodTypeTOTP:
 		factor.Type = &user_pb.AuthFactor_Otp{
 			Otp: &user_pb.AuthFactorOTP{},
 		}
@@ -183,6 +214,14 @@ func AuthMethodToPb(mfa *query.AuthMethod) *user_pb.AuthFactor {
 				Id:   mfa.TokenID,
 				Name: mfa.Name,
 			},
+		}
+	case domain.UserAuthMethodTypeOTPSMS:
+		factor.Type = &user_pb.AuthFactor_OtpSms{
+			OtpSms: &user_pb.AuthFactorOTPSMS{},
+		}
+	case domain.UserAuthMethodTypeOTPEmail:
+		factor.Type = &user_pb.AuthFactor_OtpEmail{
+			OtpEmail: &user_pb.AuthFactorOTPEmail{},
 		}
 	}
 	return factor
@@ -215,18 +254,15 @@ func UserAuthMethodToWebAuthNTokenPb(token *query.AuthMethod) *user_pb.WebAuthNT
 	}
 }
 
-func ExternalIDPViewsToExternalIDPs(externalIDPs []*query.IDPUserLink) []*domain.UserIDPLink {
-	idps := make([]*domain.UserIDPLink, len(externalIDPs))
-	for i, idp := range externalIDPs {
-		idps[i] = &domain.UserIDPLink{
-			ObjectRoot: models.ObjectRoot{
-				AggregateID:   idp.UserID,
-				ResourceOwner: idp.ResourceOwner,
-			},
-			IDPConfigID:    idp.IDPID,
-			ExternalUserID: idp.ProvidedUserID,
-			DisplayName:    idp.ProvidedUsername,
-		}
+func TypeToPb(userType domain.UserType) user_pb.Type {
+	switch userType {
+	case domain.UserTypeHuman:
+		return user_pb.Type_TYPE_HUMAN
+	case domain.UserTypeMachine:
+		return user_pb.Type_TYPE_MACHINE
+	case domain.UserTypeUnspecified:
+		return user_pb.Type_TYPE_UNSPECIFIED
+	default:
+		return user_pb.Type_TYPE_UNSPECIFIED
 	}
-	return idps
 }

@@ -1,5 +1,6 @@
 ---
-title: B2C
+title: ZITADEL for B2C Scenarios
+sidebar_label: B2C
 ---
 
 import Column from "../../../src/components/column";
@@ -29,10 +30,10 @@ You can read more about how ZITADEL handles usernames [here](../manage/console/o
 ZITADEL gives you a basic storage for users and manages phone and email addresses. It also allows you to store your own application data such as preferences or external identifiers to the metadata of a user.
 
 If you are migrating an existing project and you already have an external identity store you can consider bulk importing your user datasets.
-Read our [Management API definitions](../../apis/proto/management#importhumanuser) for more info. If the users email is not verified or no password is set, a initialization mail will be send.
+Read our [Management API definitions](/apis/resources/mgmt) for more info. If the users email is not verified or no password is set, a initialization mail will be send.
 
 :::info
-Requests to the management API are rate limited. Read our [Rate limit Policy](../../legal/rate-limit-policy) for more info.
+Requests to the management API are rate limited. Read our [Rate limit Policy](/docs/legal/policies/rate-limit-policy) for more info.
 :::
 
 ### User Authentication
@@ -51,13 +52,12 @@ When planning your application consider the following questions about User Authe
 - Do you offer Login via Identity Provider?
 - Which languages do you have to provide?
 
-When looking at this questions, you may have to admit that building an Identity Management System is much more complex and complicated than you thought initially and implementing if yourself may be too much work.
+When looking at these questions, you may have to admit that building an Identity Management System is much more complex and complicated than you thought initially and implementing if yourself may be too much work.
 Particularly because you should focus building your applications.
 
 ### Federation
 
 ZITADEL supports signup with OIDC Identity providers as well as JWT Identity Providers. On signup, ZITADEL imports user information to the own profile.
-//TODO extend this passage
 
 ### Hosted Login
 
@@ -80,13 +80,13 @@ We'd appreciate if you could contribute to our repo with translations of your la
 > Note that your console design changes to your design too
 
 </div>
-<img src="/img/guides/branding.jpeg" alt="branding in console"/>
+<img src="/docs/img/guides/branding.jpeg" alt="branding in console"/>
 </Column>
 
 ### Projects and applications
 
 As our Hosted Login is a separate authentication screen, you have to determine how you are directing your users from your applications.
-ZITADEL's Applications live under ZITADEL's Projects. You may add multiple applications for your different client-types (Native, Web, User Agent, or API). When setting up your applications consider reading our guide about [Authentication Flows](../integrate/login-users).
+ZITADEL's Applications live under ZITADEL's Projects. You may add multiple applications for your different client-types (Native, Web, User Agent, or API). When setting up your applications consider reading our guide about [Authentication Flows](../integrate/login/oidc/login-users).
 
 ### Access Control
 
@@ -99,10 +99,10 @@ Take the following considerations:
 
 The data required to check if a user has access to a certain API is stored within a user grant. This information typically is stored within roles or custom claims and can be accessed with an `access` or OIDC `id` token.
 
-Read more about Authorization in our [Guide](../integrate/oauth-recommended-flows).
+Read more about Authorization in our [Guide](../integrate/login/oidc/oauth-recommended-flows).
 
 ## Learn more
 
 - [Creating an organization](../manage/console/organizations#create-a-new-organization)
 - [Organization Branding](../manage/customize/branding)
-- [Authorization](../integrate/oauth-recommended-flows)
+- [Authorization](../integrate/login/oidc/oauth-recommended-flows)

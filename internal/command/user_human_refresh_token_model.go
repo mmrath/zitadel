@@ -3,9 +3,8 @@ package command
 import (
 	"time"
 
-	"github.com/zitadel/zitadel/internal/eventstore"
-
 	"github.com/zitadel/zitadel/internal/domain"
+	"github.com/zitadel/zitadel/internal/eventstore"
 	"github.com/zitadel/zitadel/internal/repository/user"
 )
 
@@ -15,9 +14,13 @@ type HumanRefreshTokenWriteModel struct {
 	TokenID      string
 	RefreshToken string
 
-	UserState      domain.UserState
-	IdleExpiration time.Time
-	Expiration     time.Time
+	UserState             domain.UserState
+	AuthTime              time.Time
+	IdleExpiration        time.Time
+	Expiration            time.Time
+	UserAgentID           string
+	AuthMethodsReferences []string
+	Actor                 *domain.TokenActor
 }
 
 func NewHumanRefreshTokenWriteModel(userID, resourceOwner, tokenID string) *HumanRefreshTokenWriteModel {
@@ -48,6 +51,8 @@ func (wm *HumanRefreshTokenWriteModel) AppendEvents(events ...eventstore.Event) 
 				continue
 			}
 			wm.WriteModel.AppendEvents(e)
+		default:
+			wm.WriteModel.AppendEvents(e)
 		}
 	}
 }
@@ -61,14 +66,21 @@ func (wm *HumanRefreshTokenWriteModel) Reduce() error {
 			wm.IdleExpiration = e.CreationDate().Add(e.IdleExpiration)
 			wm.Expiration = e.CreationDate().Add(e.Expiration)
 			wm.UserState = domain.UserStateActive
+			wm.AuthTime = e.AuthTime
+			wm.UserAgentID = e.UserAgentID
+			wm.AuthMethodsReferences = e.AuthMethodsReferences
+			wm.Actor = e.Actor
 		case *user.HumanRefreshTokenRenewedEvent:
 			if wm.UserState == domain.UserStateActive {
 				wm.RefreshToken = e.RefreshToken
 			}
 			wm.RefreshToken = e.RefreshToken
 			wm.IdleExpiration = e.CreationDate().Add(e.IdleExpiration)
+		case *user.HumanSignedOutEvent:
+			if wm.UserAgentID == e.UserAgentID {
+				wm.UserState = domain.UserStateDeleted
+			}
 		case *user.HumanRefreshTokenRemovedEvent,
-			*user.HumanSignedOutEvent,
 			*user.UserLockedEvent,
 			*user.UserDeactivatedEvent,
 			*user.UserRemovedEvent:

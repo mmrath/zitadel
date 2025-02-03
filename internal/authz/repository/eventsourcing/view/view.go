@@ -1,32 +1,37 @@
 package view
 
 import (
-	"database/sql"
-
-	"github.com/zitadel/zitadel/internal/id"
-	"github.com/zitadel/zitadel/internal/query"
+	"context"
 
 	"github.com/jinzhu/gorm"
+
+	"github.com/zitadel/zitadel/internal/api/call"
+	"github.com/zitadel/zitadel/internal/database"
+	"github.com/zitadel/zitadel/internal/query"
 )
 
 type View struct {
-	Db          *gorm.DB
-	Query       *query.Queries
-	idGenerator id.Generator
+	Db     *gorm.DB
+	client *database.DB
+	Query  *query.Queries
 }
 
-func StartView(sqlClient *sql.DB, idGenerator id.Generator, queries *query.Queries) (*View, error) {
-	gorm, err := gorm.Open("postgres", sqlClient)
+func StartView(sqlClient *database.DB, queries *query.Queries) (*View, error) {
+	gorm, err := gorm.Open("postgres", sqlClient.DB)
 	if err != nil {
 		return nil, err
 	}
 	return &View{
-		Db:          gorm,
-		idGenerator: idGenerator,
-		Query:       queries,
+		Db:     gorm,
+		Query:  queries,
+		client: sqlClient,
 	}, nil
 }
 
 func (v *View) Health() (err error) {
 	return v.Db.DB().Ping()
+}
+
+func (v *View) TimeTravel(ctx context.Context, tableName string) string {
+	return tableName + v.client.Timetravel(call.Took(ctx))
 }

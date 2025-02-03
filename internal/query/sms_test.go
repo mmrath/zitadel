@@ -10,41 +10,57 @@ import (
 
 	"github.com/zitadel/zitadel/internal/crypto"
 	"github.com/zitadel/zitadel/internal/domain"
-	errs "github.com/zitadel/zitadel/internal/errors"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 var (
-	expectedSMSConfigQuery = regexp.QuoteMeta(`SELECT projections.sms_configs.id,` +
-		` projections.sms_configs.aggregate_id,` +
-		` projections.sms_configs.creation_date,` +
-		` projections.sms_configs.change_date,` +
-		` projections.sms_configs.resource_owner,` +
-		` projections.sms_configs.state,` +
-		` projections.sms_configs.sequence,` +
+	expectedSMSConfigQuery = regexp.QuoteMeta(`SELECT projections.sms_configs3.id,` +
+		` projections.sms_configs3.aggregate_id,` +
+		` projections.sms_configs3.creation_date,` +
+		` projections.sms_configs3.change_date,` +
+		` projections.sms_configs3.resource_owner,` +
+		` projections.sms_configs3.state,` +
+		` projections.sms_configs3.sequence,` +
+		` projections.sms_configs3.description,` +
 
 		// twilio config
-		` projections.sms_configs_twilio.sms_id,` +
-		` projections.sms_configs_twilio.sid,` +
-		` projections.sms_configs_twilio.token,` +
-		` projections.sms_configs_twilio.sender_number` +
-		` FROM projections.sms_configs` +
-		` LEFT JOIN projections.sms_configs_twilio ON projections.sms_configs.id = projections.sms_configs_twilio.sms_id`)
-	expectedSMSConfigsQuery = regexp.QuoteMeta(`SELECT projections.sms_configs.id,` +
-		` projections.sms_configs.aggregate_id,` +
-		` projections.sms_configs.creation_date,` +
-		` projections.sms_configs.change_date,` +
-		` projections.sms_configs.resource_owner,` +
-		` projections.sms_configs.state,` +
-		` projections.sms_configs.sequence,` +
+		` projections.sms_configs3_twilio.sms_id,` +
+		` projections.sms_configs3_twilio.sid,` +
+		` projections.sms_configs3_twilio.token,` +
+		` projections.sms_configs3_twilio.sender_number,` +
+		` projections.sms_configs3_twilio.verify_service_sid,` +
+
+		// http config
+		` projections.sms_configs3_http.sms_id,` +
+		` projections.sms_configs3_http.endpoint` +
+		` FROM projections.sms_configs3` +
+		` LEFT JOIN projections.sms_configs3_twilio ON projections.sms_configs3.id = projections.sms_configs3_twilio.sms_id AND projections.sms_configs3.instance_id = projections.sms_configs3_twilio.instance_id` +
+		` LEFT JOIN projections.sms_configs3_http ON projections.sms_configs3.id = projections.sms_configs3_http.sms_id AND projections.sms_configs3.instance_id = projections.sms_configs3_http.instance_id` +
+		` AS OF SYSTEM TIME '-1 ms'`)
+	expectedSMSConfigsQuery = regexp.QuoteMeta(`SELECT projections.sms_configs3.id,` +
+		` projections.sms_configs3.aggregate_id,` +
+		` projections.sms_configs3.creation_date,` +
+		` projections.sms_configs3.change_date,` +
+		` projections.sms_configs3.resource_owner,` +
+		` projections.sms_configs3.state,` +
+		` projections.sms_configs3.sequence,` +
+		` projections.sms_configs3.description,` +
 
 		// twilio config
-		` projections.sms_configs_twilio.sms_id,` +
-		` projections.sms_configs_twilio.sid,` +
-		` projections.sms_configs_twilio.token,` +
-		` projections.sms_configs_twilio.sender_number,` +
+		` projections.sms_configs3_twilio.sms_id,` +
+		` projections.sms_configs3_twilio.sid,` +
+		` projections.sms_configs3_twilio.token,` +
+		` projections.sms_configs3_twilio.sender_number,` +
+		` projections.sms_configs3_twilio.verify_service_sid,` +
+
+		// http config
+		` projections.sms_configs3_http.sms_id,` +
+		` projections.sms_configs3_http.endpoint,` +
 		` COUNT(*) OVER ()` +
-		` FROM projections.sms_configs` +
-		` LEFT JOIN projections.sms_configs_twilio ON projections.sms_configs.id = projections.sms_configs_twilio.sms_id`)
+		` FROM projections.sms_configs3` +
+		` LEFT JOIN projections.sms_configs3_twilio ON projections.sms_configs3.id = projections.sms_configs3_twilio.sms_id AND projections.sms_configs3.instance_id = projections.sms_configs3_twilio.instance_id` +
+		` LEFT JOIN projections.sms_configs3_http ON projections.sms_configs3.id = projections.sms_configs3_http.sms_id AND projections.sms_configs3.instance_id = projections.sms_configs3_http.instance_id` +
+		` AS OF SYSTEM TIME '-1 ms'`)
 
 	smsConfigCols = []string{
 		"id",
@@ -54,16 +70,21 @@ var (
 		"resource_owner",
 		"state",
 		"sequence",
+		"description",
 		// twilio config
 		"sms_id",
 		"sid",
 		"token",
 		"sender-number",
+		"verify_sid",
+		// http config
+		"sms_id",
+		"endpoint",
 	}
 	smsConfigsCols = append(smsConfigCols, "count")
 )
 
-func Test_SMSConfigssPrepare(t *testing.T) {
+func Test_SMSConfigsPrepare(t *testing.T) {
 	type want struct {
 		sqlExpectations sqlExpectation
 		err             checkErr
@@ -102,11 +123,16 @@ func Test_SMSConfigssPrepare(t *testing.T) {
 							"ro",
 							domain.SMSConfigStateInactive,
 							uint64(20211109),
+							"description",
 							// twilio config
 							"sms-id",
 							"sid",
 							&crypto.CryptoValue{},
 							"sender-number",
+							"",
+							// http config
+							nil,
+							nil,
 						},
 					},
 				),
@@ -124,10 +150,63 @@ func Test_SMSConfigssPrepare(t *testing.T) {
 						ResourceOwner: "ro",
 						State:         domain.SMSConfigStateInactive,
 						Sequence:      20211109,
+						Description:   "description",
 						TwilioConfig: &Twilio{
-							SID:          "sid",
-							Token:        &crypto.CryptoValue{},
-							SenderNumber: "sender-number",
+							SID:              "sid",
+							Token:            &crypto.CryptoValue{},
+							SenderNumber:     "sender-number",
+							VerifyServiceSID: "",
+						},
+					},
+				},
+			},
+		},
+		{
+			name:    "prepareSMSQuery http config",
+			prepare: prepareSMSConfigsQuery,
+			want: want{
+				sqlExpectations: mockQueries(
+					expectedSMSConfigsQuery,
+					smsConfigsCols,
+					[][]driver.Value{
+						{
+							"sms-id",
+							"agg-id",
+							testNow,
+							testNow,
+							"ro",
+							domain.SMSConfigStateInactive,
+							uint64(20211109),
+							"description",
+							// twilio config
+							nil,
+							nil,
+							nil,
+							nil,
+							nil,
+							// http config
+							"sms-id",
+							"endpoint",
+						},
+					},
+				),
+			},
+			object: &SMSConfigs{
+				SearchResponse: SearchResponse{
+					Count: 1,
+				},
+				Configs: []*SMSConfig{
+					{
+						ID:            "sms-id",
+						AggregateID:   "agg-id",
+						CreationDate:  testNow,
+						ChangeDate:    testNow,
+						ResourceOwner: "ro",
+						State:         domain.SMSConfigStateInactive,
+						Sequence:      20211109,
+						Description:   "description",
+						HTTPConfig: &HTTP{
+							Endpoint: "endpoint",
 						},
 					},
 				},
@@ -147,13 +226,18 @@ func Test_SMSConfigssPrepare(t *testing.T) {
 							testNow,
 							testNow,
 							"ro",
-							domain.SMSConfigStateInactive,
+							domain.SMSConfigStateActive,
 							uint64(20211109),
+							"description",
 							// twilio config
 							"sms-id",
 							"sid",
 							&crypto.CryptoValue{},
 							"sender-number",
+							"verify-service-sid",
+							// http config
+							nil,
+							nil,
 						},
 						{
 							"sms-id2",
@@ -163,18 +247,42 @@ func Test_SMSConfigssPrepare(t *testing.T) {
 							"ro",
 							domain.SMSConfigStateInactive,
 							uint64(20211109),
+							"description",
 							// twilio config
 							"sms-id2",
 							"sid2",
 							&crypto.CryptoValue{},
 							"sender-number2",
+							"verify-service-sid2",
+							// http config
+							nil,
+							nil,
+						},
+						{
+							"sms-id3",
+							"agg-id",
+							testNow,
+							testNow,
+							"ro",
+							domain.SMSConfigStateInactive,
+							uint64(20211109),
+							"description",
+							// twilio config
+							nil,
+							nil,
+							nil,
+							nil,
+							nil,
+							// http config
+							"sms-id3",
+							"endpoint3",
 						},
 					},
 				),
 			},
 			object: &SMSConfigs{
 				SearchResponse: SearchResponse{
-					Count: 2,
+					Count: 3,
 				},
 				Configs: []*SMSConfig{
 					{
@@ -183,12 +291,14 @@ func Test_SMSConfigssPrepare(t *testing.T) {
 						CreationDate:  testNow,
 						ChangeDate:    testNow,
 						ResourceOwner: "ro",
-						State:         domain.SMSConfigStateInactive,
+						State:         domain.SMSConfigStateActive,
 						Sequence:      20211109,
+						Description:   "description",
 						TwilioConfig: &Twilio{
-							SID:          "sid",
-							Token:        &crypto.CryptoValue{},
-							SenderNumber: "sender-number",
+							SID:              "sid",
+							Token:            &crypto.CryptoValue{},
+							SenderNumber:     "sender-number",
+							VerifyServiceSID: "verify-service-sid",
 						},
 					},
 					{
@@ -199,10 +309,25 @@ func Test_SMSConfigssPrepare(t *testing.T) {
 						ResourceOwner: "ro",
 						State:         domain.SMSConfigStateInactive,
 						Sequence:      20211109,
+						Description:   "description",
 						TwilioConfig: &Twilio{
-							SID:          "sid2",
-							Token:        &crypto.CryptoValue{},
-							SenderNumber: "sender-number2",
+							SID:              "sid2",
+							Token:            &crypto.CryptoValue{},
+							SenderNumber:     "sender-number2",
+							VerifyServiceSID: "verify-service-sid2",
+						},
+					},
+					{
+						ID:            "sms-id3",
+						AggregateID:   "agg-id",
+						CreationDate:  testNow,
+						ChangeDate:    testNow,
+						ResourceOwner: "ro",
+						State:         domain.SMSConfigStateInactive,
+						Sequence:      20211109,
+						Description:   "description",
+						HTTPConfig: &HTTP{
+							Endpoint: "endpoint3",
 						},
 					},
 				},
@@ -223,12 +348,12 @@ func Test_SMSConfigssPrepare(t *testing.T) {
 					return nil, true
 				},
 			},
-			object: nil,
+			object: (*SMSConfigs)(nil),
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assertPrepare(t, tt.prepare, tt.object, tt.want.sqlExpectations, tt.want.err)
+			assertPrepare(t, tt.prepare, tt.object, tt.want.sqlExpectations, tt.want.err, defaultPrepareArgs...)
 		})
 	}
 }
@@ -248,13 +373,13 @@ func Test_SMSConfigPrepare(t *testing.T) {
 			name:    "prepareSMSConfigQuery no result",
 			prepare: prepareSMSConfigQuery,
 			want: want{
-				sqlExpectations: mockQueries(
+				sqlExpectations: mockQueriesScanErr(
 					expectedSMSConfigQuery,
 					nil,
 					nil,
 				),
 				err: func(err error) (error, bool) {
-					if !errs.IsNotFound(err) {
+					if !zerrors.IsNotFound(err) {
 						return fmt.Errorf("err should be zitadel.NotFoundError got: %w", err), false
 					}
 					return nil, true
@@ -263,7 +388,52 @@ func Test_SMSConfigPrepare(t *testing.T) {
 			object: (*SMSConfig)(nil),
 		},
 		{
-			name:    "prepareSMSConfigQuery found",
+			name:    "prepareSMSConfigQuery, twilio, found",
+			prepare: prepareSMSConfigQuery,
+			want: want{
+				sqlExpectations: mockQuery(
+					expectedSMSConfigQuery,
+					smsConfigCols,
+					[]driver.Value{
+						"sms-id",
+						"agg-id",
+						testNow,
+						testNow,
+						"ro",
+						domain.SMSConfigStateActive,
+						uint64(20211109),
+						"description",
+						// twilio config
+						"sms-id",
+						"sid",
+						&crypto.CryptoValue{},
+						"sender-number",
+						"verify-service-sid",
+						// http config
+						nil,
+						nil,
+					},
+				),
+			},
+			object: &SMSConfig{
+				ID:            "sms-id",
+				AggregateID:   "agg-id",
+				CreationDate:  testNow,
+				ChangeDate:    testNow,
+				ResourceOwner: "ro",
+				State:         domain.SMSConfigStateActive,
+				Sequence:      20211109,
+				Description:   "description",
+				TwilioConfig: &Twilio{
+					SID:              "sid",
+					SenderNumber:     "sender-number",
+					Token:            &crypto.CryptoValue{},
+					VerifyServiceSID: "verify-service-sid",
+				},
+			},
+		},
+		{
+			name:    "prepareSMSConfigQuery, http, found",
 			prepare: prepareSMSConfigQuery,
 			want: want{
 				sqlExpectations: mockQuery(
@@ -277,11 +447,16 @@ func Test_SMSConfigPrepare(t *testing.T) {
 						"ro",
 						domain.SMSConfigStateInactive,
 						uint64(20211109),
+						"description",
 						// twilio config
+						nil,
+						nil,
+						nil,
+						nil,
+						nil,
+						// http config
 						"sms-id",
-						"sid",
-						&crypto.CryptoValue{},
-						"sender-number",
+						"endpoint",
 					},
 				),
 			},
@@ -293,10 +468,9 @@ func Test_SMSConfigPrepare(t *testing.T) {
 				ResourceOwner: "ro",
 				State:         domain.SMSConfigStateInactive,
 				Sequence:      20211109,
-				TwilioConfig: &Twilio{
-					SID:          "sid",
-					SenderNumber: "sender-number",
-					Token:        &crypto.CryptoValue{},
+				Description:   "description",
+				HTTPConfig: &HTTP{
+					Endpoint: "endpoint",
 				},
 			},
 		},
@@ -315,12 +489,12 @@ func Test_SMSConfigPrepare(t *testing.T) {
 					return nil, true
 				},
 			},
-			object: nil,
+			object: (*SMSConfig)(nil),
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assertPrepare(t, tt.prepare, tt.object, tt.want.sqlExpectations, tt.want.err)
+			assertPrepare(t, tt.prepare, tt.object, tt.want.sqlExpectations, tt.want.err, defaultPrepareArgs...)
 		})
 	}
 }

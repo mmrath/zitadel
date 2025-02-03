@@ -1,5 +1,6 @@
 ---
-title: Overview
+title: ZITADEL Event Store
+sidebar_label: Overview
 ---
 
 ZITADEL is built on the [Event Sourcing pattern](../architecture/software), where changes are stored as events in an Event Store.

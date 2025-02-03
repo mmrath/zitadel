@@ -9,6 +9,31 @@ import (
 	"testing"
 )
 
+var (
+	prepareFailedEventsStmt = `SELECT` +
+		` projections.failed_events2.projection_name,` +
+		` projections.failed_events2.failed_sequence,` +
+		` projections.failed_events2.aggregate_type,` +
+		` projections.failed_events2.aggregate_id,` +
+		` projections.failed_events2.failure_count,` +
+		` projections.failed_events2.last_failed,` +
+		` projections.failed_events2.error,` +
+		` COUNT(*) OVER ()` +
+		` FROM projections.failed_events2` +
+		` AS OF SYSTEM TIME '-1 ms'`
+
+	prepareFailedEventsCols = []string{
+		"projection_name",
+		"failed_sequence",
+		"aggregate_type",
+		"aggregate_id",
+		"failure_count",
+		"last_failed",
+		"error",
+		"count",
+	}
+)
+
 func Test_FailedEventsPrepares(t *testing.T) {
 	type want struct {
 		sqlExpectations sqlExpectation
@@ -25,12 +50,7 @@ func Test_FailedEventsPrepares(t *testing.T) {
 			prepare: prepareFailedEventsQuery,
 			want: want{
 				sqlExpectations: mockQueries(
-					regexp.QuoteMeta(`SELECT projections.failed_events.projection_name,`+
-						` projections.failed_events.failed_sequence,`+
-						` projections.failed_events.failure_count,`+
-						` projections.failed_events.error,`+
-						` COUNT(*) OVER ()`+
-						` FROM projections.failed_events`),
+					regexp.QuoteMeta(prepareFailedEventsStmt),
 					nil,
 					nil,
 				),
@@ -42,24 +62,16 @@ func Test_FailedEventsPrepares(t *testing.T) {
 			prepare: prepareFailedEventsQuery,
 			want: want{
 				sqlExpectations: mockQueries(
-					regexp.QuoteMeta(`SELECT projections.failed_events.projection_name,`+
-						` projections.failed_events.failed_sequence,`+
-						` projections.failed_events.failure_count,`+
-						` projections.failed_events.error,`+
-						` COUNT(*) OVER ()`+
-						` FROM projections.failed_events`),
-					[]string{
-						"projection_name",
-						"failed_sequence",
-						"failure_count",
-						"error",
-						"count",
-					},
+					regexp.QuoteMeta(prepareFailedEventsStmt),
+					prepareFailedEventsCols,
 					[][]driver.Value{
 						{
 							"projection-name",
 							uint64(20211108),
+							"agg-type",
+							"agg-id",
 							uint64(2),
+							testNow,
 							"error",
 						},
 					},
@@ -74,7 +86,10 @@ func Test_FailedEventsPrepares(t *testing.T) {
 						ProjectionName: "projection-name",
 						FailedSequence: 20211108,
 						FailureCount:   2,
+						LastFailed:     testNow,
 						Error:          "error",
+						AggregateType:  "agg-type",
+						AggregateID:    "agg-id",
 					},
 				},
 			},
@@ -84,30 +99,25 @@ func Test_FailedEventsPrepares(t *testing.T) {
 			prepare: prepareFailedEventsQuery,
 			want: want{
 				sqlExpectations: mockQueries(
-					regexp.QuoteMeta(`SELECT projections.failed_events.projection_name,`+
-						` projections.failed_events.failed_sequence,`+
-						` projections.failed_events.failure_count,`+
-						` projections.failed_events.error,`+
-						` COUNT(*) OVER ()`+
-						` FROM projections.failed_events`),
-					[]string{
-						"projection_name",
-						"failed_sequence",
-						"failure_count",
-						"error",
-						"count",
-					},
+					regexp.QuoteMeta(prepareFailedEventsStmt),
+					prepareFailedEventsCols,
 					[][]driver.Value{
 						{
 							"projection-name",
 							uint64(20211108),
+							"agg-type",
+							"agg-id",
 							2,
+							testNow,
 							"error",
 						},
 						{
 							"projection-name-2",
 							uint64(20211108),
+							"agg-type",
+							"agg-id",
 							2,
+							nil,
 							"error",
 						},
 					},
@@ -122,13 +132,18 @@ func Test_FailedEventsPrepares(t *testing.T) {
 						ProjectionName: "projection-name",
 						FailedSequence: 20211108,
 						FailureCount:   2,
+						LastFailed:     testNow,
 						Error:          "error",
+						AggregateType:  "agg-type",
+						AggregateID:    "agg-id",
 					},
 					{
 						ProjectionName: "projection-name-2",
 						FailedSequence: 20211108,
 						FailureCount:   2,
 						Error:          "error",
+						AggregateType:  "agg-type",
+						AggregateID:    "agg-id",
 					},
 				},
 			},
@@ -138,12 +153,7 @@ func Test_FailedEventsPrepares(t *testing.T) {
 			prepare: prepareFailedEventsQuery,
 			want: want{
 				sqlExpectations: mockQueryErr(
-					regexp.QuoteMeta(`SELECT projections.failed_events.projection_name,`+
-						` projections.failed_events.failed_sequence,`+
-						` projections.failed_events.failure_count,`+
-						` projections.failed_events.error,`+
-						` COUNT(*) OVER ()`+
-						` FROM projections.failed_events`),
+					regexp.QuoteMeta(prepareFailedEventsStmt),
 					sql.ErrConnDone,
 				),
 				err: func(err error) (error, bool) {
@@ -153,12 +163,12 @@ func Test_FailedEventsPrepares(t *testing.T) {
 					return nil, true
 				},
 			},
-			object: nil,
+			object: (*FailedEvents)(nil),
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assertPrepare(t, tt.prepare, tt.object, tt.want.sqlExpectations, tt.want.err)
+			assertPrepare(t, tt.prepare, tt.object, tt.want.sqlExpectations, tt.want.err, defaultPrepareArgs...)
 		})
 	}
 }

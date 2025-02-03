@@ -3,10 +3,10 @@ package login
 import (
 	"net/http"
 
-	"github.com/zitadel/zitadel/internal/api/authz"
+	http_util "github.com/zitadel/zitadel/internal/api/http"
 	"github.com/zitadel/zitadel/internal/command"
 	"github.com/zitadel/zitadel/internal/domain"
-	caos_errs "github.com/zitadel/zitadel/internal/errors"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 const (
@@ -14,14 +14,14 @@ const (
 )
 
 type registerOrgFormData struct {
-	RegisterOrgName string `schema:"orgname"`
-	Email           string `schema:"email"`
-	Username        string `schema:"username"`
-	Firstname       string `schema:"firstname"`
-	Lastname        string `schema:"lastname"`
-	Password        string `schema:"register-password"`
-	Password2       string `schema:"register-password-confirmation"`
-	TermsConfirm    bool   `schema:"terms-confirm"`
+	RegisterOrgName string              `schema:"orgname"`
+	Email           domain.EmailAddress `schema:"email"`
+	Username        string              `schema:"username"`
+	Firstname       string              `schema:"firstname"`
+	Lastname        string              `schema:"lastname"`
+	Password        string              `schema:"register-password"`
+	Password2       string              `schema:"register-password-confirmation"`
+	TermsConfirm    bool                `schema:"terms-confirm"`
 }
 
 type registerOrgData struct {
@@ -38,6 +38,15 @@ type registerOrgData struct {
 }
 
 func (l *Login) handleRegisterOrg(w http.ResponseWriter, r *http.Request) {
+	restrictions, err := l.query.GetInstanceRestrictions(r.Context())
+	if err != nil {
+		l.renderError(w, r, nil, err)
+		return
+	}
+	if restrictions.DisallowPublicOrgRegistration {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
 	data := new(registerOrgFormData)
 	authRequest, err := l.getAuthRequestAndParseData(r, data)
 	if err != nil {
@@ -48,6 +57,15 @@ func (l *Login) handleRegisterOrg(w http.ResponseWriter, r *http.Request) {
 }
 
 func (l *Login) handleRegisterOrgCheck(w http.ResponseWriter, r *http.Request) {
+	restrictions, err := l.query.GetInstanceRestrictions(r.Context())
+	if err != nil {
+		l.renderError(w, r, nil, err)
+		return
+	}
+	if restrictions.DisallowPublicOrgRegistration {
+		w.WriteHeader(http.StatusConflict)
+		return
+	}
 	data := new(registerOrgFormData)
 	authRequest, err := l.getAuthRequestAndParseData(r, data)
 	if err != nil {
@@ -55,7 +73,7 @@ func (l *Login) handleRegisterOrgCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if data.Password != data.Password2 {
-		err := caos_errs.ThrowInvalidArgument(nil, "VIEW-KaGue", "Errors.User.Password.ConfirmationWrong")
+		err := zerrors.ThrowInvalidArgument(nil, "VIEW-KaGue", "Errors.User.Password.ConfirmationWrong")
 		l.renderRegisterOrg(w, r, authRequest, data, err)
 		return
 	}
@@ -66,7 +84,7 @@ func (l *Login) handleRegisterOrgCheck(w http.ResponseWriter, r *http.Request) {
 		l.renderRegisterOrg(w, r, authRequest, data, err)
 		return
 	}
-	_, _, err = l.command.SetUpOrg(ctx, data.toCommandOrg(), userIDs...)
+	_, err = l.command.SetUpOrg(ctx, data.toCommandOrg(), true, userIDs...)
 	if err != nil {
 		l.renderRegisterOrg(w, r, authRequest, data, err)
 		return
@@ -79,16 +97,12 @@ func (l *Login) handleRegisterOrgCheck(w http.ResponseWriter, r *http.Request) {
 }
 
 func (l *Login) renderRegisterOrg(w http.ResponseWriter, r *http.Request, authRequest *domain.AuthRequest, formData *registerOrgFormData, err error) {
-	var errID, errMessage string
-	if err != nil {
-		errID, errMessage = l.getErrorMessage(r, err)
-	}
 	if formData == nil {
 		formData = new(registerOrgFormData)
 	}
 	translator := l.getTranslator(r.Context(), authRequest)
 	data := registerOrgData{
-		baseData:            l.getBaseData(r, authRequest, "RegistrationOrg.Title","RegistrationOrg.Description", errID, errMessage),
+		baseData:            l.getBaseData(r, authRequest, translator, "RegistrationOrg.Title", "RegistrationOrg.Description", err),
 		registerOrgFormData: *formData,
 	}
 	pwPolicy := l.getPasswordComplexityPolicy(r, "0")
@@ -110,7 +124,7 @@ func (l *Login) renderRegisterOrg(w http.ResponseWriter, r *http.Request, authRe
 	orgPolicy, _ := l.getDefaultDomainPolicy(r)
 	if orgPolicy != nil {
 		data.UserLoginMustBeDomain = orgPolicy.UserLoginMustBeDomain
-		data.IamDomain = authz.GetInstance(r.Context()).RequestedDomain()
+		data.IamDomain = http_util.DomainContext(r.Context()).RequestedDomain()
 	}
 
 	if authRequest == nil {
@@ -121,7 +135,7 @@ func (l *Login) renderRegisterOrg(w http.ResponseWriter, r *http.Request, authRe
 
 func (d registerOrgFormData) toUserDomain() *domain.Human {
 	if d.Username == "" {
-		d.Username = d.Email
+		d.Username = string(d.Email)
 	}
 	return &domain.Human{
 		Username: d.Username,
@@ -140,19 +154,23 @@ func (d registerOrgFormData) toUserDomain() *domain.Human {
 
 func (d registerOrgFormData) toCommandOrg() *command.OrgSetup {
 	if d.Username == "" {
-		d.Username = d.Email
+		d.Username = string(d.Email)
 	}
 	return &command.OrgSetup{
 		Name: d.RegisterOrgName,
-		Human: command.AddHuman{
-			Username:  d.Username,
-			FirstName: d.Firstname,
-			LastName:  d.Lastname,
-			Email: command.Email{
-				Address: d.Email,
+		Admins: []*command.OrgSetupAdmin{
+			{
+				Human: &command.AddHuman{
+					Username:  d.Username,
+					FirstName: d.Firstname,
+					LastName:  d.Lastname,
+					Email: command.Email{
+						Address: d.Email,
+					},
+					Password: d.Password,
+					Register: true,
+				},
 			},
-			Password: d.Password,
-			Register: true,
 		},
 	}
 }

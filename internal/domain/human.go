@@ -1,17 +1,16 @@
 package domain
 
 import (
+	"strings"
 	"time"
 
-	"github.com/zitadel/zitadel/internal/crypto"
-	caos_errors "github.com/zitadel/zitadel/internal/errors"
-	es_models "github.com/zitadel/zitadel/internal/eventstore/v1/models"
-)
+	"golang.org/x/net/context"
 
-type HumanDetails struct {
-	ID string
-	ObjectDetails
-}
+	"github.com/zitadel/zitadel/internal/crypto"
+	es_models "github.com/zitadel/zitadel/internal/eventstore/v1/models"
+	"github.com/zitadel/zitadel/internal/telemetry/tracing"
+	"github.com/zitadel/zitadel/internal/zerrors"
+)
 
 type Human struct {
 	es_models.ObjectRoot
@@ -19,7 +18,7 @@ type Human struct {
 	Username string
 	State    UserState
 	*Password
-	*HashedPassword
+	HashedPassword string
 	*Profile
 	*Email
 	*Phone
@@ -60,30 +59,59 @@ func (f Gender) Specified() bool {
 	return f > GenderUnspecified && f < genderCount
 }
 
-func (u *Human) IsValid() bool {
-	return u.Username != "" && u.Profile != nil && u.Profile.IsValid() && u.Email != nil && u.Email.IsValid() && u.Phone == nil || (u.Phone != nil && u.Phone.PhoneNumber != "" && u.Phone.IsValid())
-}
-
-func (u *Human) CheckDomainPolicy(policy *DomainPolicy) error {
-	if policy == nil {
-		return caos_errors.ThrowPreconditionFailed(nil, "DOMAIN-zSH7j", "Errors.Users.DomainPolicyNil")
+func (u *Human) Normalize() error {
+	if u.Username == "" {
+		return zerrors.ThrowInvalidArgument(nil, "COMMAND-00p2b", "Errors.User.Username.Empty")
 	}
-	if !policy.UserLoginMustBeDomain && u.Profile != nil && u.Username == "" && u.Email != nil {
-		u.Username = u.EmailAddress
+	if err := u.Profile.Validate(); err != nil {
+		return err
+	}
+	if err := u.Email.Validate(); err != nil {
+		return err
+	}
+	if u.Phone != nil && u.Phone.PhoneNumber != "" {
+		if err := u.Phone.Normalize(); err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
-func (u *Human) SetNamesAsDisplayname() {
-	if u.Profile != nil && u.DisplayName == "" && u.FirstName != "" && u.LastName != "" {
-		u.DisplayName = u.FirstName + " " + u.LastName
+func (u *Human) CheckDomainPolicy(policy *DomainPolicy) error {
+	if policy == nil {
+		return zerrors.ThrowPreconditionFailed(nil, "DOMAIN-zSH7j", "Errors.Users.DomainPolicyNil")
 	}
+	if !policy.UserLoginMustBeDomain && u.Profile != nil && u.Username == "" && u.Email != nil {
+		u.Username = string(u.EmailAddress)
+	}
+	return nil
 }
 
-func (u *Human) HashPasswordIfExisting(policy *PasswordComplexityPolicy, passwordAlg crypto.HashAlgorithm, onetime bool) error {
+func (u *Human) EnsureDisplayName() {
+	if u.Profile == nil {
+		u.Profile = new(Profile)
+	}
+	if u.DisplayName != "" {
+		return
+	}
+	if u.FirstName != "" && u.LastName != "" {
+		u.DisplayName = u.FirstName + " " + u.LastName
+		return
+	}
+	if u.Email != nil && strings.TrimSpace(string(u.Email.EmailAddress)) != "" {
+		u.DisplayName = string(u.Email.EmailAddress)
+		return
+	}
+	u.DisplayName = u.Username
+}
+
+func (u *Human) HashPasswordIfExisting(ctx context.Context, policy *PasswordComplexityPolicy, hasher *crypto.Hasher, onetime bool) (err error) {
+	ctx, span := tracing.NewSpan(ctx)
+	defer func() { span.EndWithError(err) }()
+
 	if u.Password != nil {
 		u.Password.ChangeRequired = onetime
-		return u.Password.HashPasswordIfExisting(policy, passwordAlg)
+		return u.Password.HashPasswordIfExisting(ctx, policy, hasher)
 	}
 	return nil
 }
@@ -92,7 +120,7 @@ func (u *Human) IsInitialState(passwordless, externalIDPs bool) bool {
 	if externalIDPs {
 		return false
 	}
-	return u.Email == nil || !u.IsEmailVerified || !passwordless && (u.Password == nil || u.Password.SecretString == "") && (u.HashedPassword == nil || u.HashedPassword.SecretString == "")
+	return u.Email == nil || !u.IsEmailVerified || !passwordless && (u.Password == nil || u.Password.SecretString == "") && u.HashedPassword == ""
 }
 
 func NewInitUserCode(generator crypto.Generator) (*InitUserCode, error) {

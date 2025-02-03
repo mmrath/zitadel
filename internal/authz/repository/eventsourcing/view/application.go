@@ -3,9 +3,9 @@ package view
 import (
 	"context"
 
-	"github.com/zitadel/zitadel/internal/errors"
 	"github.com/zitadel/zitadel/internal/query"
 	"github.com/zitadel/zitadel/internal/telemetry/tracing"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 func (v *View) ApplicationByOIDCClientID(ctx context.Context, clientID string) (*query.App, error) {
@@ -32,12 +32,12 @@ func (v *View) ApplicationByProjecIDAndAppName(ctx context.Context, projectID, a
 		},
 	}
 
-	apps, err := v.Query.SearchApps(ctx, queries)
+	apps, err := v.Query.SearchApps(ctx, queries, false)
 	if err != nil {
 		return nil, err
 	}
 	if len(apps.Apps) != 1 {
-		return nil, errors.ThrowNotFound(nil, "VIEW-svLQq", "app not found")
+		return nil, zerrors.ThrowNotFound(nil, "VIEW-svLQq", "app not found")
 	}
 
 	return apps.Apps[0], nil

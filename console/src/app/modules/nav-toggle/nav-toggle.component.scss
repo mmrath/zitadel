@@ -1,14 +1,12 @@
-@use '@angular/material' as mat;
-
 @mixin nav-toggle-theme($theme) {
   $primary: map-get($theme, primary);
   $warn: map-get($theme, warn);
   $background: map-get($theme, background);
   $accent: map-get($theme, accent);
-  $primary-color: mat.get-color-from-palette($primary, 500);
+  $primary-color: map-get($primary, 500);
 
-  $warn-color: mat.get-color-from-palette($warn, 500);
-  $accent-color: mat.get-color-from-palette($accent, 500);
+  $warn-color: map-get($warn, 500);
+  $accent-color: map-get($accent, 500);
   $foreground: map-get($theme, foreground);
   $is-dark-theme: map-get($theme, is-dark);
   $back: map-get($background, background);
@@ -19,7 +17,7 @@
     font-size: 14px;
     line-height: 14px;
     padding: 0.4rem 12px;
-    color: mat.get-color-from-palette($foreground, text) !important;
+    color: map-get($foreground, text);
     transition: all 0.2s ease;
     text-decoration: none;
     border-radius: 50vw;
@@ -30,7 +28,13 @@
     position: relative;
     background: none;
     cursor: pointer;
-    font-family: 'Lato', -apple-system, BlinkMacSystemFont, sans-serif;
+    font-family:
+      'Lato',
+      -apple-system,
+      BlinkMacSystemFont,
+      sans-serif;
+    box-sizing: border-box;
+    height: 27px;
 
     .c_label {
       display: flex;
@@ -38,8 +42,19 @@
       text-align: center;
 
       .count {
-        display: none;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        height: 17px;
+        width: 17px;
+        border-radius: 50%;
+        padding: 2px;
+        margin: -2px -9px -2px 8px;
         margin-left: 6px;
+        background-color: if($is-dark-theme, #ffffff20, #00000020);
+        line-height: 18px;
+        font-size: 11px;
+        transition: background 0.2s ease;
       }
     }
 
@@ -59,11 +74,11 @@
 
     &.active {
       background-color: $primary-color;
-      color: mat.get-color-from-palette($foreground, toolbar-items) !important;
+      color: map-get($primary, default-contrast);
 
       .c_label {
         .count {
-          display: inline-block;
+          background-color: if($is-dark-theme, #00000020, #ffffff20);
         }
       }
     }

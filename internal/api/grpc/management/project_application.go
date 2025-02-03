@@ -8,8 +8,9 @@ import (
 	change_grpc "github.com/zitadel/zitadel/internal/api/grpc/change"
 	object_grpc "github.com/zitadel/zitadel/internal/api/grpc/object"
 	project_grpc "github.com/zitadel/zitadel/internal/api/grpc/project"
-	"github.com/zitadel/zitadel/internal/domain"
+	"github.com/zitadel/zitadel/internal/eventstore"
 	"github.com/zitadel/zitadel/internal/query"
+	"github.com/zitadel/zitadel/internal/repository/project"
 	mgmt_pb "github.com/zitadel/zitadel/pkg/grpc/management"
 )
 
@@ -28,33 +29,62 @@ func (s *Server) ListApps(ctx context.Context, req *mgmt_pb.ListAppsRequest) (*m
 	if err != nil {
 		return nil, err
 	}
-	apps, err := s.query.SearchApps(ctx, queries)
+	apps, err := s.query.SearchApps(ctx, queries, false)
 	if err != nil {
 		return nil, err
 	}
 	return &mgmt_pb.ListAppsResponse{
 		Result:  project_grpc.AppsToPb(apps.Apps),
-		Details: object_grpc.ToListDetails(apps.Count, apps.Sequence, apps.Timestamp),
+		Details: object_grpc.ToListDetails(apps.Count, apps.Sequence, apps.LastRun),
 	}, nil
 }
 
 func (s *Server) ListAppChanges(ctx context.Context, req *mgmt_pb.ListAppChangesRequest) (*mgmt_pb.ListAppChangesResponse, error) {
-	sequence, limit, asc := change_grpc.ChangeQueryToQuery(req.Query)
-	res, err := s.query.ApplicationChanges(ctx, req.ProjectId, req.AppId, sequence, limit, asc, s.auditLogRetention)
+	var (
+		limit    uint64
+		sequence uint64
+		asc      bool
+	)
+	if req.Query != nil {
+		limit = uint64(req.Query.Limit)
+		sequence = req.Query.Sequence
+		asc = req.Query.Asc
+	}
+
+	query := eventstore.NewSearchQueryBuilder(eventstore.ColumnsEvent).
+		AllowTimeTravel().
+		Limit(limit).
+		AwaitOpenTransactions().
+		OrderDesc().
+		ResourceOwner(authz.GetCtxData(ctx).OrgID).
+		SequenceGreater(sequence).
+		AddQuery().
+		AggregateTypes(project.AggregateType).
+		AggregateIDs(req.ProjectId).
+		EventData(map[string]interface{}{
+			"appId": req.AppId,
+		}).
+		Builder()
+	if asc {
+		query.OrderAsc()
+	}
+
+	changes, err := s.query.SearchEvents(ctx, query)
 	if err != nil {
 		return nil, err
 	}
+
 	return &mgmt_pb.ListAppChangesResponse{
-		Result: change_grpc.ChangesToPb(res.Changes, s.assetAPIPrefix(ctx)),
+		Result: change_grpc.EventsToChangesPb(changes, s.assetAPIPrefix(ctx)),
 	}, nil
 }
 
 func (s *Server) AddOIDCApp(ctx context.Context, req *mgmt_pb.AddOIDCAppRequest) (*mgmt_pb.AddOIDCAppResponse, error) {
-	appSecretGenerator, err := s.query.InitHashGenerator(ctx, domain.SecretGeneratorTypeAppSecret, s.passwordHashAlg)
+	oidcApp, err := AddOIDCAppRequestToDomain(req)
 	if err != nil {
 		return nil, err
 	}
-	app, err := s.command.AddOIDCApplication(ctx, AddOIDCAppRequestToDomain(req), authz.GetCtxData(ctx).OrgID, appSecretGenerator)
+	app, err := s.command.AddOIDCApplication(ctx, oidcApp, authz.GetCtxData(ctx).OrgID)
 	if err != nil {
 		return nil, err
 	}
@@ -79,11 +109,7 @@ func (s *Server) AddSAMLApp(ctx context.Context, req *mgmt_pb.AddSAMLAppRequest)
 }
 
 func (s *Server) AddAPIApp(ctx context.Context, req *mgmt_pb.AddAPIAppRequest) (*mgmt_pb.AddAPIAppResponse, error) {
-	appSecretGenerator, err := s.query.InitHashGenerator(ctx, domain.SecretGeneratorTypeAppSecret, s.passwordHashAlg)
-	if err != nil {
-		return nil, err
-	}
-	app, err := s.command.AddAPIApplication(ctx, AddAPIAppRequestToDomain(req), authz.GetCtxData(ctx).OrgID, appSecretGenerator)
+	app, err := s.command.AddAPIApplication(ctx, AddAPIAppRequestToDomain(req), authz.GetCtxData(ctx).OrgID)
 	if err != nil {
 		return nil, err
 	}
@@ -106,7 +132,11 @@ func (s *Server) UpdateApp(ctx context.Context, req *mgmt_pb.UpdateAppRequest) (
 }
 
 func (s *Server) UpdateOIDCAppConfig(ctx context.Context, req *mgmt_pb.UpdateOIDCAppConfigRequest) (*mgmt_pb.UpdateOIDCAppConfigResponse, error) {
-	config, err := s.command.ChangeOIDCApplication(ctx, UpdateOIDCAppConfigRequestToDomain(req), authz.GetCtxData(ctx).OrgID)
+	oidcApp, err := UpdateOIDCAppConfigRequestToDomain(req)
+	if err != nil {
+		return nil, err
+	}
+	config, err := s.command.ChangeOIDCApplication(ctx, oidcApp, authz.GetCtxData(ctx).OrgID)
 	if err != nil {
 		return nil, err
 	}
@@ -178,11 +208,7 @@ func (s *Server) RemoveApp(ctx context.Context, req *mgmt_pb.RemoveAppRequest) (
 }
 
 func (s *Server) RegenerateOIDCClientSecret(ctx context.Context, req *mgmt_pb.RegenerateOIDCClientSecretRequest) (*mgmt_pb.RegenerateOIDCClientSecretResponse, error) {
-	appSecretGenerator, err := s.query.InitHashGenerator(ctx, domain.SecretGeneratorTypeAppSecret, s.passwordHashAlg)
-	if err != nil {
-		return nil, err
-	}
-	config, err := s.command.ChangeOIDCApplicationSecret(ctx, req.ProjectId, req.AppId, authz.GetCtxData(ctx).OrgID, appSecretGenerator)
+	config, err := s.command.ChangeOIDCApplicationSecret(ctx, req.ProjectId, req.AppId, authz.GetCtxData(ctx).OrgID)
 	if err != nil {
 		return nil, err
 	}
@@ -197,11 +223,7 @@ func (s *Server) RegenerateOIDCClientSecret(ctx context.Context, req *mgmt_pb.Re
 }
 
 func (s *Server) RegenerateAPIClientSecret(ctx context.Context, req *mgmt_pb.RegenerateAPIClientSecretRequest) (*mgmt_pb.RegenerateAPIClientSecretResponse, error) {
-	appSecretGenerator, err := s.query.InitHashGenerator(ctx, domain.SecretGeneratorTypeAppSecret, s.passwordHashAlg)
-	if err != nil {
-		return nil, err
-	}
-	config, err := s.command.ChangeAPIApplicationSecret(ctx, req.ProjectId, req.AppId, authz.GetCtxData(ctx).OrgID, appSecretGenerator)
+	config, err := s.command.ChangeAPIApplicationSecret(ctx, req.ProjectId, req.AppId, authz.GetCtxData(ctx).OrgID)
 	if err != nil {
 		return nil, err
 	}
@@ -242,13 +264,13 @@ func (s *Server) ListAppKeys(ctx context.Context, req *mgmt_pb.ListAppKeysReques
 	if err != nil {
 		return nil, err
 	}
-	keys, err := s.query.SearchAuthNKeys(ctx, queries)
+	keys, err := s.query.SearchAuthNKeys(ctx, queries, false)
 	if err != nil {
 		return nil, err
 	}
 	return &mgmt_pb.ListAppKeysResponse{
 		Result:  authn_grpc.KeysToPb(keys.AuthNKeys),
-		Details: object_grpc.ToListDetails(keys.Count, keys.Sequence, keys.Timestamp),
+		Details: object_grpc.ToListDetails(keys.Count, keys.Sequence, keys.LastRun),
 	}, nil
 }
 

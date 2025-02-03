@@ -1,4 +1,4 @@
-import { Component, OnDestroy, OnInit, ViewChild } from '@angular/core';
+import { Component, Input, OnDestroy, OnInit, ViewChild } from '@angular/core';
 import { MatDialog } from '@angular/material/dialog';
 import { MatSort } from '@angular/material/sort';
 import { MatTable, MatTableDataSource } from '@angular/material/table';
@@ -32,14 +32,21 @@ export class AuthUserMfaComponent implements OnInit, OnDestroy {
 
   @ViewChild(MatTable) public table!: MatTable<AuthFactor.AsObject>;
   @ViewChild(MatSort) public sort!: MatSort;
+  @Input() public phoneVerified: boolean = false;
   public dataSource: MatTableDataSource<AuthFactor.AsObject> = new MatTableDataSource<AuthFactor.AsObject>([]);
 
   public AuthFactorState: any = AuthFactorState;
 
   public error: string = '';
-  public otpAvailable: boolean = false;
+  public otpDisabled$ = new BehaviorSubject<boolean>(true);
+  public otpSmsDisabled$ = new BehaviorSubject<boolean>(true);
+  public otpEmailDisabled$ = new BehaviorSubject<boolean>(true);
 
-  constructor(private service: GrpcAuthService, private toast: ToastService, private dialog: MatDialog) {}
+  constructor(
+    private service: GrpcAuthService,
+    private toast: ToastService,
+    private dialog: MatDialog,
+  ) {}
 
   public ngOnInit(): void {
     this.getMFAs();
@@ -52,7 +59,10 @@ export class AuthUserMfaComponent implements OnInit, OnDestroy {
   public addAuthFactor(): void {
     const dialogRef = this.dialog.open(AuthFactorDialogComponent, {
       data: {
-        otpDisabled: !this.otpAvailable,
+        otpDisabled$: this.otpDisabled$,
+        otpSmsDisabled$: this.otpSmsDisabled$,
+        otpEmailDisabled$: this.otpEmailDisabled$,
+        phoneVerified: this.phoneVerified,
       },
     });
 
@@ -71,12 +81,39 @@ export class AuthUserMfaComponent implements OnInit, OnDestroy {
 
         const index = list.findIndex((mfa) => mfa.otp);
         if (index === -1) {
-          this.otpAvailable = true;
+          this.otpDisabled$.next(false);
+        }
+
+        const sms = list.findIndex((mfa) => mfa.otpSms);
+        if (sms === -1) {
+          this.otpSmsDisabled$.next(false);
+        }
+
+        const email = list.findIndex((mfa) => mfa.otpEmail);
+        if (email === -1) {
+          this.otpEmailDisabled$.next(false);
         }
       })
       .catch((error) => {
         this.error = error.message;
       });
+  }
+
+  private cleanupList(): void {
+    const totp = this.dataSource.data.findIndex((mfa) => !!mfa.otp);
+    if (totp > -1) {
+      this.dataSource.data.splice(totp, 1);
+    }
+
+    const sms = this.dataSource.data.findIndex((mfa) => !!mfa.otpSms);
+    if (sms > -1) {
+      this.dataSource.data.splice(sms, 1);
+    }
+
+    const email = this.dataSource.data.findIndex((mfa) => !!mfa.otpEmail);
+    if (email > -1) {
+      this.dataSource.data.splice(email, 1);
+    }
   }
 
   public deleteMFA(factor: AuthFactor.AsObject): void {
@@ -98,10 +135,7 @@ export class AuthUserMfaComponent implements OnInit, OnDestroy {
             .then(() => {
               this.toast.showInfo('USER.TOAST.OTPREMOVED', true);
 
-              const index = this.dataSource.data.findIndex((mfa) => !!mfa.otp);
-              if (index > -1) {
-                this.dataSource.data.splice(index, 1);
-              }
+              this.cleanupList();
               this.getMFAs();
             })
             .catch((error) => {
@@ -113,10 +147,31 @@ export class AuthUserMfaComponent implements OnInit, OnDestroy {
             .then(() => {
               this.toast.showInfo('USER.TOAST.U2FREMOVED', true);
 
-              const index = this.dataSource.data.findIndex((mfa) => !!mfa.u2f);
-              if (index > -1) {
-                this.dataSource.data.splice(index, 1);
-              }
+              this.cleanupList();
+              this.getMFAs();
+            })
+            .catch((error) => {
+              this.toast.showError(error);
+            });
+        } else if (factor.otpEmail) {
+          this.service
+            .removeMyAuthFactorOTPEmail()
+            .then(() => {
+              this.toast.showInfo('USER.TOAST.OTPREMOVED', true);
+
+              this.cleanupList();
+              this.getMFAs();
+            })
+            .catch((error) => {
+              this.toast.showError(error);
+            });
+        } else if (factor.otpSms) {
+          this.service
+            .removeMyAuthFactorOTPSMS()
+            .then(() => {
+              this.toast.showInfo('USER.TOAST.OTPREMOVED', true);
+
+              this.cleanupList();
               this.getMFAs();
             })
             .catch((error) => {

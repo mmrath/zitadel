@@ -8,7 +8,7 @@ var (
 		instanceIDCol: projection.LoginNameUserInstanceIDCol,
 	}
 	LoginNameUserIDCol = Column{
-		name:  "user_id",
+		name:  projection.LoginNameUserCol,
 		table: loginNameTable,
 	}
 	LoginNameNameCol = Column{
@@ -16,11 +16,11 @@ var (
 		table: loginNameTable,
 	}
 	LoginNameIsPrimaryCol = Column{
-		name:  projection.LoginNameDomainIsPrimaryCol,
+		name:  projection.LoginNameIsPrimaryCol,
 		table: loginNameTable,
 	}
 	LoginNameInstanceIDCol = Column{
-		name:  projection.LoginNameUserInstanceIDCol,
+		name:  projection.LoginNameInstanceIDCol,
 		table: loginNameTable,
 	}
 )

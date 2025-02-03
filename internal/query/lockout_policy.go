@@ -3,16 +3,19 @@ package query
 import (
 	"context"
 	"database/sql"
-	errs "errors"
+	"errors"
 	"time"
 
 	sq "github.com/Masterminds/squirrel"
+	"github.com/zitadel/logging"
 
 	"github.com/zitadel/zitadel/internal/api/authz"
-
+	"github.com/zitadel/zitadel/internal/api/call"
 	"github.com/zitadel/zitadel/internal/domain"
-	"github.com/zitadel/zitadel/internal/errors"
+	"github.com/zitadel/zitadel/internal/eventstore/handler/v2"
 	"github.com/zitadel/zitadel/internal/query/projection"
+	"github.com/zitadel/zitadel/internal/telemetry/tracing"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 type LockoutPolicy struct {
@@ -24,6 +27,7 @@ type LockoutPolicy struct {
 	State         domain.PolicyState
 
 	MaxPasswordAttempts uint64
+	MaxOTPAttempts      uint64
 	ShowFailures        bool
 
 	IsDefault bool
@@ -66,6 +70,10 @@ var (
 		name:  projection.LockoutPolicyMaxPasswordAttemptsCol,
 		table: lockoutTable,
 	}
+	LockoutColMaxOTPAttempts = Column{
+		name:  projection.LockoutPolicyMaxOTPAttemptsCol,
+		table: lockoutTable,
+	}
 	LockoutColIsDefault = Column{
 		name:  projection.LockoutPolicyIsDefaultCol,
 		table: lockoutTable,
@@ -76,38 +84,47 @@ var (
 	}
 )
 
-func (q *Queries) LockoutPolicyByOrg(ctx context.Context, shouldTriggerBulk bool, orgID string) (*LockoutPolicy, error) {
+func (q *Queries) LockoutPolicyByOrg(ctx context.Context, shouldTriggerBulk bool, orgID string) (policy *LockoutPolicy, err error) {
+	ctx, span := tracing.NewSpan(ctx)
+	defer func() { span.EndWithError(err) }()
+
 	if shouldTriggerBulk {
-		projection.LockoutPolicyProjection.Trigger(ctx)
+		_, traceSpan := tracing.NewNamedSpan(ctx, "TriggerLockoutPolicyProjection")
+		ctx, err = projection.LockoutPolicyProjection.Trigger(ctx, handler.WithAwaitRunning())
+		logging.OnError(err).Debug("trigger failed")
+		traceSpan.EndWithError(err)
+	}
+	eq := sq.Eq{
+		LockoutColInstanceID.identifier(): authz.GetInstance(ctx).InstanceID(),
 	}
 
-	stmt, scan := prepareLockoutPolicyQuery()
+	stmt, scan := prepareLockoutPolicyQuery(ctx, q.client)
 	query, args, err := stmt.Where(
 		sq.And{
-			sq.Eq{
-				LockoutColInstanceID.identifier(): authz.GetInstance(ctx).InstanceID(),
-			},
+			eq,
 			sq.Or{
-				sq.Eq{
-					LockoutColID.identifier(): orgID,
-				},
-				sq.Eq{
-					LockoutColID.identifier(): authz.GetInstance(ctx).InstanceID(),
-				},
+				sq.Eq{LockoutColID.identifier(): orgID},
+				sq.Eq{LockoutColID.identifier(): authz.GetInstance(ctx).InstanceID()},
 			},
 		}).
 		OrderBy(LockoutColIsDefault.identifier()).
 		Limit(1).ToSql()
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "QUERY-SKR6X", "Errors.Query.SQLStatement")
+		return nil, zerrors.ThrowInternal(err, "QUERY-SKR6X", "Errors.Query.SQLStatement")
 	}
 
-	row := q.client.QueryRowContext(ctx, query, args...)
-	return scan(row)
+	err = q.client.QueryRowContext(ctx, func(row *sql.Row) error {
+		policy, err = scan(row)
+		return err
+	}, query, args...)
+	return policy, err
 }
 
-func (q *Queries) DefaultLockoutPolicy(ctx context.Context) (*LockoutPolicy, error) {
-	stmt, scan := prepareLockoutPolicyQuery()
+func (q *Queries) DefaultLockoutPolicy(ctx context.Context) (policy *LockoutPolicy, err error) {
+	ctx, span := tracing.NewSpan(ctx)
+	defer func() { span.EndWithError(err) }()
+
+	stmt, scan := prepareLockoutPolicyQuery(ctx, q.client)
 	query, args, err := stmt.Where(sq.Eq{
 		LockoutColID.identifier():         authz.GetInstance(ctx).InstanceID(),
 		LockoutColInstanceID.identifier(): authz.GetInstance(ctx).InstanceID(),
@@ -115,14 +132,17 @@ func (q *Queries) DefaultLockoutPolicy(ctx context.Context) (*LockoutPolicy, err
 		OrderBy(LockoutColIsDefault.identifier()).
 		Limit(1).ToSql()
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "QUERY-mN0Ci", "Errors.Query.SQLStatement")
+		return nil, zerrors.ThrowInternal(err, "QUERY-mN0Ci", "Errors.Query.SQLStatement")
 	}
 
-	row := q.client.QueryRowContext(ctx, query, args...)
-	return scan(row)
+	err = q.client.QueryRowContext(ctx, func(row *sql.Row) error {
+		policy, err = scan(row)
+		return err
+	}, query, args...)
+	return policy, err
 }
 
-func prepareLockoutPolicyQuery() (sq.SelectBuilder, func(*sql.Row) (*LockoutPolicy, error)) {
+func prepareLockoutPolicyQuery(ctx context.Context, db prepareDatabase) (sq.SelectBuilder, func(*sql.Row) (*LockoutPolicy, error)) {
 	return sq.Select(
 			LockoutColID.identifier(),
 			LockoutColSequence.identifier(),
@@ -131,10 +151,12 @@ func prepareLockoutPolicyQuery() (sq.SelectBuilder, func(*sql.Row) (*LockoutPoli
 			LockoutColResourceOwner.identifier(),
 			LockoutColShowFailures.identifier(),
 			LockoutColMaxPasswordAttempts.identifier(),
+			LockoutColMaxOTPAttempts.identifier(),
 			LockoutColIsDefault.identifier(),
 			LockoutColState.identifier(),
 		).
-			From(lockoutTable.identifier()).PlaceholderFormat(sq.Dollar),
+			From(lockoutTable.identifier() + db.Timetravel(call.Took(ctx))).
+			PlaceholderFormat(sq.Dollar),
 		func(row *sql.Row) (*LockoutPolicy, error) {
 			policy := new(LockoutPolicy)
 			err := row.Scan(
@@ -145,14 +167,15 @@ func prepareLockoutPolicyQuery() (sq.SelectBuilder, func(*sql.Row) (*LockoutPoli
 				&policy.ResourceOwner,
 				&policy.ShowFailures,
 				&policy.MaxPasswordAttempts,
+				&policy.MaxOTPAttempts,
 				&policy.IsDefault,
 				&policy.State,
 			)
 			if err != nil {
-				if errs.Is(err, sql.ErrNoRows) {
-					return nil, errors.ThrowNotFound(err, "QUERY-63mtI", "Errors.PasswordComplexityPolicy.NotFound")
+				if errors.Is(err, sql.ErrNoRows) {
+					return nil, zerrors.ThrowNotFound(err, "QUERY-38pZnUemLP", "Errors.IAM.PasswordLockoutPolicy.NotFound")
 				}
-				return nil, errors.ThrowInternal(err, "QUERY-uulCZ", "Errors.Internal")
+				return nil, zerrors.ThrowInternal(err, "QUERY-PJURxRUoYG", "Errors.Internal")
 			}
 			return policy, nil
 		}

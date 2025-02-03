@@ -63,10 +63,17 @@ export class ChangesComponent implements OnInit, OnDestroy {
   private _data: BehaviorSubject<any> = new BehaviorSubject([]);
 
   loading: Observable<boolean> = this._loading.asObservable();
-  public data!: Observable<MappedChange[]>;
+  public data: Observable<MappedChange[]> = this._data.asObservable().pipe(
+    scan((acc, val) => {
+      return false ? val.concat(acc) : acc.concat(val);
+    }),
+  );
   public changes!: ListChanges;
   private destroyed$: Subject<void> = new Subject();
-  constructor(private mgmtUserService: ManagementService, private authUserService: GrpcAuthService) {}
+  constructor(
+    private mgmtUserService: ManagementService,
+    private authUserService: GrpcAuthService,
+  ) {}
 
   ngOnInit(): void {
     this.init();
@@ -106,13 +113,6 @@ export class ChangesComponent implements OnInit, OnDestroy {
     }
 
     this.mapAndUpdate(first);
-
-    // Create the observable array for consumption in components
-    this.data = this._data.asObservable().pipe(
-      scan((acc, val) => {
-        return false ? val.concat(acc) : acc.concat(val);
-      }),
-    );
   }
 
   public more(): void {

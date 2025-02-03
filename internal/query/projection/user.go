@@ -4,21 +4,19 @@ import (
 	"context"
 	"database/sql"
 
+	"github.com/zitadel/zitadel/internal/crypto"
 	"github.com/zitadel/zitadel/internal/domain"
-	"github.com/zitadel/zitadel/internal/errors"
 	"github.com/zitadel/zitadel/internal/eventstore"
-	"github.com/zitadel/zitadel/internal/eventstore/handler"
-	"github.com/zitadel/zitadel/internal/eventstore/handler/crdb"
+	old_handler "github.com/zitadel/zitadel/internal/eventstore/handler"
+	"github.com/zitadel/zitadel/internal/eventstore/handler/v2"
 	"github.com/zitadel/zitadel/internal/repository/instance"
+	"github.com/zitadel/zitadel/internal/repository/org"
 	"github.com/zitadel/zitadel/internal/repository/user"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
-type userProjection struct {
-	crdb.StatementHandler
-}
-
 const (
-	UserTable        = "projections.users5"
+	UserTable        = "projections.users14"
 	UserHumanTable   = UserTable + "_" + UserHumanSuffix
 	UserMachineTable = UserTable + "_" + UserMachineSuffix
 	UserNotifyTable  = UserTable + "_" + UserNotifySuffix
@@ -33,9 +31,12 @@ const (
 	UserUsernameCol      = "username"
 	UserTypeCol          = "type"
 
-	UserHumanSuffix        = "humans"
-	HumanUserIDCol         = "user_id"
-	HumanUserInstanceIDCol = "instance_id"
+	UserHumanSuffix             = "humans"
+	HumanUserIDCol              = "user_id"
+	HumanUserInstanceIDCol      = "instance_id"
+	HumanPasswordChangeRequired = "password_change_required"
+	HumanPasswordChanged        = "password_changed"
+	HumanMFAInitSkipped         = "mfa_init_skipped"
 
 	// profile
 	HumanFirstNameCol         = "first_name"
@@ -55,95 +56,108 @@ const (
 	HumanIsPhoneVerifiedCol = "is_phone_verified"
 
 	// machine
-	UserMachineSuffix        = "machines"
-	MachineUserIDCol         = "user_id"
-	MachineUserInstanceIDCol = "instance_id"
-	MachineNameCol           = "name"
-	MachineDescriptionCol    = "description"
+	UserMachineSuffix         = "machines"
+	MachineUserIDCol          = "user_id"
+	MachineUserInstanceIDCol  = "instance_id"
+	MachineNameCol            = "name"
+	MachineDescriptionCol     = "description"
+	MachineSecretCol          = "secret"
+	MachineAccessTokenTypeCol = "access_token_type"
 
 	// notify
-	UserNotifySuffix       = "notifications"
-	NotifyUserIDCol        = "user_id"
-	NotifyInstanceIDCol    = "instance_id"
-	NotifyLastEmailCol     = "last_email"
-	NotifyVerifiedEmailCol = "verified_email"
-	NotifyLastPhoneCol     = "last_phone"
-	NotifyVerifiedPhoneCol = "verified_phone"
-	NotifyPasswordSetCol   = "password_set"
+	UserNotifySuffix            = "notifications"
+	NotifyUserIDCol             = "user_id"
+	NotifyInstanceIDCol         = "instance_id"
+	NotifyLastEmailCol          = "last_email"
+	NotifyVerifiedEmailCol      = "verified_email"
+	NotifyVerifiedEmailLowerCol = "verified_email_lower"
+	NotifyLastPhoneCol          = "last_phone"
+	NotifyVerifiedPhoneCol      = "verified_phone"
+	NotifyPasswordSetCol        = "password_set"
 )
 
-func newUserProjection(ctx context.Context, config crdb.StatementHandlerConfig) *userProjection {
-	p := new(userProjection)
-	config.ProjectionName = UserTable
-	config.Reducers = p.reducers()
-	config.InitCheck = crdb.NewMultiTableCheck(
-		crdb.NewTable([]*crdb.Column{
-			crdb.NewColumn(UserIDCol, crdb.ColumnTypeText),
-			crdb.NewColumn(UserCreationDateCol, crdb.ColumnTypeTimestamp),
-			crdb.NewColumn(UserChangeDateCol, crdb.ColumnTypeTimestamp),
-			crdb.NewColumn(UserSequenceCol, crdb.ColumnTypeInt64),
-			crdb.NewColumn(UserStateCol, crdb.ColumnTypeEnum),
-			crdb.NewColumn(UserResourceOwnerCol, crdb.ColumnTypeText),
-			crdb.NewColumn(UserInstanceIDCol, crdb.ColumnTypeText),
-			crdb.NewColumn(UserUsernameCol, crdb.ColumnTypeText),
-			crdb.NewColumn(UserTypeCol, crdb.ColumnTypeEnum),
-		},
-			crdb.NewPrimaryKey(UserIDCol, UserInstanceIDCol),
-			crdb.WithIndex(crdb.NewIndex("username_idx5", []string{UserUsernameCol})),
-			crdb.WithIndex(crdb.NewIndex("user_ro_idx5", []string{UserResourceOwnerCol})),
-		),
-		crdb.NewSuffixedTable([]*crdb.Column{
-			crdb.NewColumn(HumanUserIDCol, crdb.ColumnTypeText),
-			crdb.NewColumn(HumanUserInstanceIDCol, crdb.ColumnTypeText),
-			crdb.NewColumn(HumanFirstNameCol, crdb.ColumnTypeText),
-			crdb.NewColumn(HumanLastNameCol, crdb.ColumnTypeText),
-			crdb.NewColumn(HumanNickNameCol, crdb.ColumnTypeText, crdb.Nullable()),
-			crdb.NewColumn(HumanDisplayNameCol, crdb.ColumnTypeText, crdb.Nullable()),
-			crdb.NewColumn(HumanPreferredLanguageCol, crdb.ColumnTypeText, crdb.Nullable()),
-			crdb.NewColumn(HumanGenderCol, crdb.ColumnTypeEnum, crdb.Nullable()),
-			crdb.NewColumn(HumanAvatarURLCol, crdb.ColumnTypeText, crdb.Nullable()),
-			crdb.NewColumn(HumanEmailCol, crdb.ColumnTypeText),
-			crdb.NewColumn(HumanIsEmailVerifiedCol, crdb.ColumnTypeBool, crdb.Default(false)),
-			crdb.NewColumn(HumanPhoneCol, crdb.ColumnTypeText, crdb.Nullable()),
-			crdb.NewColumn(HumanIsPhoneVerifiedCol, crdb.ColumnTypeBool, crdb.Nullable()),
-		},
-			crdb.NewPrimaryKey(HumanUserIDCol, HumanUserInstanceIDCol),
-			UserHumanSuffix,
-			crdb.WithForeignKey(crdb.NewForeignKeyOfPublicKeys("fk_human_ref_user5")),
-		),
-		crdb.NewSuffixedTable([]*crdb.Column{
-			crdb.NewColumn(MachineUserIDCol, crdb.ColumnTypeText),
-			crdb.NewColumn(MachineUserInstanceIDCol, crdb.ColumnTypeText),
-			crdb.NewColumn(MachineNameCol, crdb.ColumnTypeText),
-			crdb.NewColumn(MachineDescriptionCol, crdb.ColumnTypeText, crdb.Nullable()),
-		},
-			crdb.NewPrimaryKey(MachineUserIDCol, MachineUserInstanceIDCol),
-			UserMachineSuffix,
-			crdb.WithForeignKey(crdb.NewForeignKeyOfPublicKeys("fk_machine_ref_user5")),
-		),
-		crdb.NewSuffixedTable([]*crdb.Column{
-			crdb.NewColumn(NotifyUserIDCol, crdb.ColumnTypeText),
-			crdb.NewColumn(NotifyInstanceIDCol, crdb.ColumnTypeText),
-			crdb.NewColumn(NotifyLastEmailCol, crdb.ColumnTypeText, crdb.Nullable()),
-			crdb.NewColumn(NotifyVerifiedEmailCol, crdb.ColumnTypeText, crdb.Nullable()),
-			crdb.NewColumn(NotifyLastPhoneCol, crdb.ColumnTypeText, crdb.Nullable()),
-			crdb.NewColumn(NotifyVerifiedPhoneCol, crdb.ColumnTypeText, crdb.Nullable()),
-			crdb.NewColumn(NotifyPasswordSetCol, crdb.ColumnTypeBool, crdb.Default(false)),
-		},
-			crdb.NewPrimaryKey(NotifyUserIDCol, NotifyInstanceIDCol),
-			UserNotifySuffix,
-			crdb.WithForeignKey(crdb.NewForeignKeyOfPublicKeys("fk_notify_ref_user5")),
-		),
-	)
-	p.StatementHandler = crdb.NewStatementHandler(ctx, config)
-	return p
+type userProjection struct{}
+
+func newUserProjection(ctx context.Context, config handler.Config) *handler.Handler {
+	return handler.NewHandler(ctx, &config, new(userProjection))
 }
 
-func (p *userProjection) reducers() []handler.AggregateReducer {
+func (*userProjection) Name() string {
+	return UserTable
+}
+
+func (*userProjection) Init() *old_handler.Check {
+	return handler.NewMultiTableCheck(
+		handler.NewTable([]*handler.InitColumn{
+			handler.NewColumn(UserIDCol, handler.ColumnTypeText),
+			handler.NewColumn(UserCreationDateCol, handler.ColumnTypeTimestamp),
+			handler.NewColumn(UserChangeDateCol, handler.ColumnTypeTimestamp),
+			handler.NewColumn(UserSequenceCol, handler.ColumnTypeInt64),
+			handler.NewColumn(UserStateCol, handler.ColumnTypeEnum),
+			handler.NewColumn(UserResourceOwnerCol, handler.ColumnTypeText),
+			handler.NewColumn(UserInstanceIDCol, handler.ColumnTypeText),
+			handler.NewColumn(UserUsernameCol, handler.ColumnTypeText),
+			handler.NewColumn(UserTypeCol, handler.ColumnTypeEnum),
+		},
+			handler.NewPrimaryKey(UserInstanceIDCol, UserIDCol),
+			handler.WithIndex(handler.NewIndex("username", []string{UserUsernameCol})),
+			handler.WithIndex(handler.NewIndex("resource_owner", []string{UserResourceOwnerCol})),
+		),
+		handler.NewSuffixedTable([]*handler.InitColumn{
+			handler.NewColumn(HumanUserIDCol, handler.ColumnTypeText),
+			handler.NewColumn(HumanUserInstanceIDCol, handler.ColumnTypeText),
+			handler.NewColumn(HumanFirstNameCol, handler.ColumnTypeText),
+			handler.NewColumn(HumanLastNameCol, handler.ColumnTypeText),
+			handler.NewColumn(HumanNickNameCol, handler.ColumnTypeText, handler.Nullable()),
+			handler.NewColumn(HumanDisplayNameCol, handler.ColumnTypeText, handler.Nullable()),
+			handler.NewColumn(HumanPreferredLanguageCol, handler.ColumnTypeText, handler.Nullable()),
+			handler.NewColumn(HumanGenderCol, handler.ColumnTypeEnum, handler.Nullable()),
+			handler.NewColumn(HumanAvatarURLCol, handler.ColumnTypeText, handler.Nullable()),
+			handler.NewColumn(HumanEmailCol, handler.ColumnTypeText),
+			handler.NewColumn(HumanIsEmailVerifiedCol, handler.ColumnTypeBool, handler.Default(false)),
+			handler.NewColumn(HumanPhoneCol, handler.ColumnTypeText, handler.Nullable()),
+			handler.NewColumn(HumanIsPhoneVerifiedCol, handler.ColumnTypeBool, handler.Nullable()),
+			handler.NewColumn(HumanPasswordChangeRequired, handler.ColumnTypeBool),
+			handler.NewColumn(HumanPasswordChanged, handler.ColumnTypeTimestamp, handler.Nullable()),
+			handler.NewColumn(HumanMFAInitSkipped, handler.ColumnTypeTimestamp, handler.Nullable()),
+		},
+			handler.NewPrimaryKey(HumanUserInstanceIDCol, HumanUserIDCol),
+			UserHumanSuffix,
+			handler.WithForeignKey(handler.NewForeignKeyOfPublicKeys()),
+		),
+		handler.NewSuffixedTable([]*handler.InitColumn{
+			handler.NewColumn(MachineUserIDCol, handler.ColumnTypeText),
+			handler.NewColumn(MachineUserInstanceIDCol, handler.ColumnTypeText),
+			handler.NewColumn(MachineNameCol, handler.ColumnTypeText),
+			handler.NewColumn(MachineDescriptionCol, handler.ColumnTypeText, handler.Nullable()),
+			handler.NewColumn(MachineSecretCol, handler.ColumnTypeText, handler.Nullable()),
+			handler.NewColumn(MachineAccessTokenTypeCol, handler.ColumnTypeEnum, handler.Default(0)),
+		},
+			handler.NewPrimaryKey(MachineUserInstanceIDCol, MachineUserIDCol),
+			UserMachineSuffix,
+			handler.WithForeignKey(handler.NewForeignKeyOfPublicKeys()),
+		),
+		handler.NewSuffixedTable([]*handler.InitColumn{
+			handler.NewColumn(NotifyUserIDCol, handler.ColumnTypeText),
+			handler.NewColumn(NotifyInstanceIDCol, handler.ColumnTypeText),
+			handler.NewColumn(NotifyLastEmailCol, handler.ColumnTypeText, handler.Nullable()),
+			handler.NewColumn(NotifyVerifiedEmailCol, handler.ColumnTypeText, handler.Nullable()),
+			handler.NewColumn(NotifyLastPhoneCol, handler.ColumnTypeText, handler.Nullable()),
+			handler.NewColumn(NotifyVerifiedPhoneCol, handler.ColumnTypeText, handler.Nullable()),
+			handler.NewColumn(NotifyPasswordSetCol, handler.ColumnTypeBool, handler.Default(false)),
+		},
+			handler.NewPrimaryKey(NotifyInstanceIDCol, NotifyUserIDCol),
+			UserNotifySuffix,
+			handler.WithForeignKey(handler.NewForeignKeyOfPublicKeys()),
+		),
+	)
+}
+
+func (p *userProjection) Reducers() []handler.AggregateReducer {
 	return []handler.AggregateReducer{
 		{
 			Aggregate: user.AggregateType,
-			EventRedusers: []handler.EventReducer{
+			EventReducers: []handler.EventReducer{
 				{
 					Event:  user.UserV1AddedType,
 					Reduce: p.reduceHumanAdded,
@@ -272,11 +286,64 @@ func (p *userProjection) reducers() []handler.AggregateReducer {
 					Event:  user.HumanPasswordChangedType,
 					Reduce: p.reduceHumanPasswordChanged,
 				},
+				{
+					Event:  user.MachineSecretSetType,
+					Reduce: p.reduceMachineSecretSet,
+				},
+				{
+					Event:  user.MachineSecretHashUpdatedType,
+					Reduce: p.reduceMachineSecretHashUpdated,
+				},
+				{
+					Event:  user.MachineSecretRemovedType,
+					Reduce: p.reduceMachineSecretRemoved,
+				},
+				{
+					Event:  user.UserV1MFAOTPVerifiedType,
+					Reduce: p.reduceUnsetMFAInitSkipped,
+				},
+				{
+					Event:  user.HumanMFAOTPVerifiedType,
+					Reduce: p.reduceUnsetMFAInitSkipped,
+				},
+				{
+					Event:  user.HumanOTPSMSAddedType,
+					Reduce: p.reduceUnsetMFAInitSkipped,
+				},
+				{
+					Event:  user.HumanOTPEmailAddedType,
+					Reduce: p.reduceUnsetMFAInitSkipped,
+				},
+				{
+					Event:  user.HumanU2FTokenVerifiedType,
+					Reduce: p.reduceUnsetMFAInitSkipped,
+				},
+				{
+					Event:  user.HumanPasswordlessTokenVerifiedType,
+					Reduce: p.reduceUnsetMFAInitSkipped,
+				},
+				{
+					Event:  user.UserV1MFAInitSkippedType,
+					Reduce: p.reduceMFAInitSkipped,
+				},
+				{
+					Event:  user.HumanMFAInitSkippedType,
+					Reduce: p.reduceMFAInitSkipped,
+				},
+			},
+		},
+		{
+			Aggregate: org.AggregateType,
+			EventReducers: []handler.EventReducer{
+				{
+					Event:  org.OrgRemovedEventType,
+					Reduce: p.reduceOwnerRemoved,
+				},
 			},
 		},
 		{
 			Aggregate: instance.AggregateType,
-			EventRedusers: []handler.EventReducer{
+			EventReducers: []handler.EventReducer{
 				{
 					Event:  instance.InstanceRemovedEventType,
 					Reduce: reduceInstanceRemovedHelper(UserInstanceIDCol),
@@ -289,11 +356,12 @@ func (p *userProjection) reducers() []handler.AggregateReducer {
 func (p *userProjection) reduceHumanAdded(event eventstore.Event) (*handler.Statement, error) {
 	e, ok := event.(*user.HumanAddedEvent)
 	if !ok {
-		return nil, errors.ThrowInvalidArgumentf(nil, "HANDL-Ebynp", "reduce.wrong.event.type %s", user.HumanAddedType)
+		return nil, zerrors.ThrowInvalidArgumentf(nil, "HANDL-Ebynp", "reduce.wrong.event.type %s", user.HumanAddedType)
 	}
-	return crdb.NewMultiStatement(
+	passwordSet := crypto.SecretOrEncodedHash(e.Secret, e.EncodedHash) != ""
+	return handler.NewMultiStatement(
 		e,
-		crdb.AddCreateStatement(
+		handler.AddCreateStatement(
 			[]handler.Column{
 				handler.NewCol(UserIDCol, e.Aggregate().ID),
 				handler.NewCol(UserCreationDateCol, e.CreationDate()),
@@ -306,7 +374,7 @@ func (p *userProjection) reduceHumanAdded(event eventstore.Event) (*handler.Stat
 				handler.NewCol(UserTypeCol, domain.UserTypeHuman),
 			},
 		),
-		crdb.AddCreateStatement(
+		handler.AddCreateStatement(
 			[]handler.Column{
 				handler.NewCol(HumanUserIDCol, e.Aggregate().ID),
 				handler.NewCol(HumanUserInstanceIDCol, e.Aggregate().InstanceID),
@@ -317,19 +385,21 @@ func (p *userProjection) reduceHumanAdded(event eventstore.Event) (*handler.Stat
 				handler.NewCol(HumanPreferredLanguageCol, &sql.NullString{String: e.PreferredLanguage.String(), Valid: !e.PreferredLanguage.IsRoot()}),
 				handler.NewCol(HumanGenderCol, &sql.NullInt16{Int16: int16(e.Gender), Valid: e.Gender.Specified()}),
 				handler.NewCol(HumanEmailCol, e.EmailAddress),
-				handler.NewCol(HumanPhoneCol, &sql.NullString{String: e.PhoneNumber, Valid: e.PhoneNumber != ""}),
+				handler.NewCol(HumanPhoneCol, &sql.NullString{String: string(e.PhoneNumber), Valid: e.PhoneNumber != ""}),
+				handler.NewCol(HumanPasswordChangeRequired, e.ChangeRequired),
+				handler.NewCol(HumanPasswordChanged, &sql.NullTime{Time: e.CreatedAt(), Valid: passwordSet}),
 			},
-			crdb.WithTableSuffix(UserHumanSuffix),
+			handler.WithTableSuffix(UserHumanSuffix),
 		),
-		crdb.AddCreateStatement(
+		handler.AddCreateStatement(
 			[]handler.Column{
 				handler.NewCol(NotifyUserIDCol, e.Aggregate().ID),
 				handler.NewCol(NotifyInstanceIDCol, e.Aggregate().InstanceID),
 				handler.NewCol(NotifyLastEmailCol, e.EmailAddress),
-				handler.NewCol(NotifyLastPhoneCol, &sql.NullString{String: e.PhoneNumber, Valid: e.PhoneNumber != ""}),
-				handler.NewCol(NotifyPasswordSetCol, e.Secret != nil),
+				handler.NewCol(NotifyLastPhoneCol, &sql.NullString{String: string(e.PhoneNumber), Valid: e.PhoneNumber != ""}),
+				handler.NewCol(NotifyPasswordSetCol, passwordSet),
 			},
-			crdb.WithTableSuffix(UserNotifySuffix),
+			handler.WithTableSuffix(UserNotifySuffix),
 		),
 	), nil
 }
@@ -337,11 +407,12 @@ func (p *userProjection) reduceHumanAdded(event eventstore.Event) (*handler.Stat
 func (p *userProjection) reduceHumanRegistered(event eventstore.Event) (*handler.Statement, error) {
 	e, ok := event.(*user.HumanRegisteredEvent)
 	if !ok {
-		return nil, errors.ThrowInvalidArgumentf(nil, "HANDL-xE53M", "reduce.wrong.event.type %s", user.HumanRegisteredType)
+		return nil, zerrors.ThrowInvalidArgumentf(nil, "HANDL-xE53M", "reduce.wrong.event.type %s", user.HumanRegisteredType)
 	}
-	return crdb.NewMultiStatement(
+	passwordSet := crypto.SecretOrEncodedHash(e.Secret, e.EncodedHash) != ""
+	return handler.NewMultiStatement(
 		e,
-		crdb.AddCreateStatement(
+		handler.AddCreateStatement(
 			[]handler.Column{
 				handler.NewCol(UserIDCol, e.Aggregate().ID),
 				handler.NewCol(UserCreationDateCol, e.CreationDate()),
@@ -354,7 +425,7 @@ func (p *userProjection) reduceHumanRegistered(event eventstore.Event) (*handler
 				handler.NewCol(UserTypeCol, domain.UserTypeHuman),
 			},
 		),
-		crdb.AddCreateStatement(
+		handler.AddCreateStatement(
 			[]handler.Column{
 				handler.NewCol(HumanUserIDCol, e.Aggregate().ID),
 				handler.NewCol(HumanUserInstanceIDCol, e.Aggregate().InstanceID),
@@ -365,19 +436,21 @@ func (p *userProjection) reduceHumanRegistered(event eventstore.Event) (*handler
 				handler.NewCol(HumanPreferredLanguageCol, &sql.NullString{String: e.PreferredLanguage.String(), Valid: !e.PreferredLanguage.IsRoot()}),
 				handler.NewCol(HumanGenderCol, &sql.NullInt16{Int16: int16(e.Gender), Valid: e.Gender.Specified()}),
 				handler.NewCol(HumanEmailCol, e.EmailAddress),
-				handler.NewCol(HumanPhoneCol, &sql.NullString{String: e.PhoneNumber, Valid: e.PhoneNumber != ""}),
+				handler.NewCol(HumanPhoneCol, &sql.NullString{String: string(e.PhoneNumber), Valid: e.PhoneNumber != ""}),
+				handler.NewCol(HumanPasswordChangeRequired, e.ChangeRequired),
+				handler.NewCol(HumanPasswordChanged, &sql.NullTime{Time: e.CreatedAt(), Valid: passwordSet}),
 			},
-			crdb.WithTableSuffix(UserHumanSuffix),
+			handler.WithTableSuffix(UserHumanSuffix),
 		),
-		crdb.AddCreateStatement(
+		handler.AddCreateStatement(
 			[]handler.Column{
 				handler.NewCol(NotifyUserIDCol, e.Aggregate().ID),
 				handler.NewCol(NotifyInstanceIDCol, e.Aggregate().InstanceID),
 				handler.NewCol(NotifyLastEmailCol, e.EmailAddress),
-				handler.NewCol(NotifyLastPhoneCol, &sql.NullString{String: e.PhoneNumber, Valid: e.PhoneNumber != ""}),
-				handler.NewCol(NotifyPasswordSetCol, e.Secret != nil),
+				handler.NewCol(NotifyLastPhoneCol, &sql.NullString{String: string(e.PhoneNumber), Valid: e.PhoneNumber != ""}),
+				handler.NewCol(NotifyPasswordSetCol, passwordSet),
 			},
-			crdb.WithTableSuffix(UserNotifySuffix),
+			handler.WithTableSuffix(UserNotifySuffix),
 		),
 	), nil
 }
@@ -385,9 +458,9 @@ func (p *userProjection) reduceHumanRegistered(event eventstore.Event) (*handler
 func (p *userProjection) reduceHumanInitCodeAdded(event eventstore.Event) (*handler.Statement, error) {
 	e, ok := event.(*user.HumanInitialCodeAddedEvent)
 	if !ok {
-		return nil, errors.ThrowInvalidArgumentf(nil, "HANDL-Dvgws", "reduce.wrong.event.type %s", user.HumanInitialCodeAddedType)
+		return nil, zerrors.ThrowInvalidArgumentf(nil, "HANDL-Dvgws", "reduce.wrong.event.type %s", user.HumanInitialCodeAddedType)
 	}
-	return crdb.NewUpdateStatement(
+	return handler.NewUpdateStatement(
 		e,
 		[]handler.Column{
 			handler.NewCol(UserStateCol, domain.UserStateInitial),
@@ -402,9 +475,9 @@ func (p *userProjection) reduceHumanInitCodeAdded(event eventstore.Event) (*hand
 func (p *userProjection) reduceHumanInitCodeSucceeded(event eventstore.Event) (*handler.Statement, error) {
 	e, ok := event.(*user.HumanInitializedCheckSucceededEvent)
 	if !ok {
-		return nil, errors.ThrowInvalidArgumentf(nil, "HANDL-Dfvwq", "reduce.wrong.event.type %s", user.HumanInitializedCheckSucceededType)
+		return nil, zerrors.ThrowInvalidArgumentf(nil, "HANDL-Dfvwq", "reduce.wrong.event.type %s", user.HumanInitializedCheckSucceededType)
 	}
-	return crdb.NewUpdateStatement(
+	return handler.NewUpdateStatement(
 		e,
 		[]handler.Column{
 			handler.NewCol(UserStateCol, domain.UserStateActive),
@@ -419,10 +492,10 @@ func (p *userProjection) reduceHumanInitCodeSucceeded(event eventstore.Event) (*
 func (p *userProjection) reduceUserLocked(event eventstore.Event) (*handler.Statement, error) {
 	e, ok := event.(*user.UserLockedEvent)
 	if !ok {
-		return nil, errors.ThrowInvalidArgumentf(nil, "HANDL-exyBF", "reduce.wrong.event.type %s", user.UserLockedType)
+		return nil, zerrors.ThrowInvalidArgumentf(nil, "HANDL-exyBF", "reduce.wrong.event.type %s", user.UserLockedType)
 	}
 
-	return crdb.NewUpdateStatement(
+	return handler.NewUpdateStatement(
 		e,
 		[]handler.Column{
 			handler.NewCol(UserChangeDateCol, e.CreationDate()),
@@ -439,10 +512,10 @@ func (p *userProjection) reduceUserLocked(event eventstore.Event) (*handler.Stat
 func (p *userProjection) reduceUserUnlocked(event eventstore.Event) (*handler.Statement, error) {
 	e, ok := event.(*user.UserUnlockedEvent)
 	if !ok {
-		return nil, errors.ThrowInvalidArgumentf(nil, "HANDL-JIyRl", "reduce.wrong.event.type %s", user.UserUnlockedType)
+		return nil, zerrors.ThrowInvalidArgumentf(nil, "HANDL-JIyRl", "reduce.wrong.event.type %s", user.UserUnlockedType)
 	}
 
-	return crdb.NewUpdateStatement(
+	return handler.NewUpdateStatement(
 		e,
 		[]handler.Column{
 			handler.NewCol(UserChangeDateCol, e.CreationDate()),
@@ -459,10 +532,10 @@ func (p *userProjection) reduceUserUnlocked(event eventstore.Event) (*handler.St
 func (p *userProjection) reduceUserDeactivated(event eventstore.Event) (*handler.Statement, error) {
 	e, ok := event.(*user.UserDeactivatedEvent)
 	if !ok {
-		return nil, errors.ThrowInvalidArgumentf(nil, "HANDL-6BNjj", "reduce.wrong.event.type %s", user.UserDeactivatedType)
+		return nil, zerrors.ThrowInvalidArgumentf(nil, "HANDL-6BNjj", "reduce.wrong.event.type %s", user.UserDeactivatedType)
 	}
 
-	return crdb.NewUpdateStatement(
+	return handler.NewUpdateStatement(
 		e,
 		[]handler.Column{
 			handler.NewCol(UserChangeDateCol, e.CreationDate()),
@@ -479,10 +552,10 @@ func (p *userProjection) reduceUserDeactivated(event eventstore.Event) (*handler
 func (p *userProjection) reduceUserReactivated(event eventstore.Event) (*handler.Statement, error) {
 	e, ok := event.(*user.UserReactivatedEvent)
 	if !ok {
-		return nil, errors.ThrowInvalidArgumentf(nil, "HANDL-IoF6j", "reduce.wrong.event.type %s", user.UserReactivatedType)
+		return nil, zerrors.ThrowInvalidArgumentf(nil, "HANDL-IoF6j", "reduce.wrong.event.type %s", user.UserReactivatedType)
 	}
 
-	return crdb.NewUpdateStatement(
+	return handler.NewUpdateStatement(
 		e,
 		[]handler.Column{
 			handler.NewCol(UserChangeDateCol, e.CreationDate()),
@@ -499,10 +572,10 @@ func (p *userProjection) reduceUserReactivated(event eventstore.Event) (*handler
 func (p *userProjection) reduceUserRemoved(event eventstore.Event) (*handler.Statement, error) {
 	e, ok := event.(*user.UserRemovedEvent)
 	if !ok {
-		return nil, errors.ThrowInvalidArgumentf(nil, "HANDL-BQB2t", "reduce.wrong.event.type %s", user.UserRemovedType)
+		return nil, zerrors.ThrowInvalidArgumentf(nil, "HANDL-BQB2t", "reduce.wrong.event.type %s", user.UserRemovedType)
 	}
 
-	return crdb.NewDeleteStatement(
+	return handler.NewDeleteStatement(
 		e,
 		[]handler.Condition{
 			handler.NewCond(UserIDCol, e.Aggregate().ID),
@@ -514,10 +587,10 @@ func (p *userProjection) reduceUserRemoved(event eventstore.Event) (*handler.Sta
 func (p *userProjection) reduceUserNameChanged(event eventstore.Event) (*handler.Statement, error) {
 	e, ok := event.(*user.UsernameChangedEvent)
 	if !ok {
-		return nil, errors.ThrowInvalidArgumentf(nil, "HANDL-QNKyV", "reduce.wrong.event.type %s", user.UserUserNameChangedType)
+		return nil, zerrors.ThrowInvalidArgumentf(nil, "HANDL-QNKyV", "reduce.wrong.event.type %s", user.UserUserNameChangedType)
 	}
 
-	return crdb.NewUpdateStatement(
+	return handler.NewUpdateStatement(
 		e,
 		[]handler.Column{
 			handler.NewCol(UserChangeDateCol, e.CreationDate()),
@@ -534,10 +607,10 @@ func (p *userProjection) reduceUserNameChanged(event eventstore.Event) (*handler
 func (p *userProjection) reduceDomainClaimed(event eventstore.Event) (*handler.Statement, error) {
 	e, ok := event.(*user.DomainClaimedEvent)
 	if !ok {
-		return nil, errors.ThrowInvalidArgumentf(nil, "HANDL-ASwf3", "reduce.wrong.event.type %s", user.UserDomainClaimedType)
+		return nil, zerrors.ThrowInvalidArgumentf(nil, "HANDL-ASwf3", "reduce.wrong.event.type %s", user.UserDomainClaimedType)
 	}
 
-	return crdb.NewUpdateStatement(
+	return handler.NewUpdateStatement(
 		e,
 		[]handler.Column{
 			handler.NewCol(UserChangeDateCol, e.CreationDate()),
@@ -554,7 +627,7 @@ func (p *userProjection) reduceDomainClaimed(event eventstore.Event) (*handler.S
 func (p *userProjection) reduceHumanProfileChanged(event eventstore.Event) (*handler.Statement, error) {
 	e, ok := event.(*user.HumanProfileChangedEvent)
 	if !ok {
-		return nil, errors.ThrowInvalidArgumentf(nil, "HANDL-769v4", "reduce.wrong.event.type %s", user.HumanProfileChangedType)
+		return nil, zerrors.ThrowInvalidArgumentf(nil, "HANDL-769v4", "reduce.wrong.event.type %s", user.HumanProfileChangedType)
 	}
 	cols := make([]handler.Column, 0, 6)
 	if e.FirstName != "" {
@@ -581,9 +654,9 @@ func (p *userProjection) reduceHumanProfileChanged(event eventstore.Event) (*han
 		cols = append(cols, handler.NewCol(HumanGenderCol, *e.Gender))
 	}
 
-	return crdb.NewMultiStatement(
+	return handler.NewMultiStatement(
 		e,
-		crdb.AddUpdateStatement(
+		handler.AddUpdateStatement(
 			[]handler.Column{
 				handler.NewCol(UserChangeDateCol, e.CreationDate()),
 				handler.NewCol(UserSequenceCol, e.Sequence()),
@@ -593,13 +666,13 @@ func (p *userProjection) reduceHumanProfileChanged(event eventstore.Event) (*han
 				handler.NewCond(UserInstanceIDCol, e.Aggregate().InstanceID),
 			},
 		),
-		crdb.AddUpdateStatement(
+		handler.AddUpdateStatement(
 			cols,
 			[]handler.Condition{
 				handler.NewCond(HumanUserIDCol, e.Aggregate().ID),
 				handler.NewCond(HumanUserInstanceIDCol, e.Aggregate().InstanceID),
 			},
-			crdb.WithTableSuffix(UserHumanSuffix),
+			handler.WithTableSuffix(UserHumanSuffix),
 		),
 	), nil
 }
@@ -607,12 +680,12 @@ func (p *userProjection) reduceHumanProfileChanged(event eventstore.Event) (*han
 func (p *userProjection) reduceHumanPhoneChanged(event eventstore.Event) (*handler.Statement, error) {
 	e, ok := event.(*user.HumanPhoneChangedEvent)
 	if !ok {
-		return nil, errors.ThrowInvalidArgumentf(nil, "HANDL-xOGIA", "reduce.wrong.event.type %s", user.HumanPhoneChangedType)
+		return nil, zerrors.ThrowInvalidArgumentf(nil, "HANDL-xOGIA", "reduce.wrong.event.type %s", user.HumanPhoneChangedType)
 	}
 
-	return crdb.NewMultiStatement(
+	return handler.NewMultiStatement(
 		e,
-		crdb.AddUpdateStatement(
+		handler.AddUpdateStatement(
 			[]handler.Column{
 				handler.NewCol(UserChangeDateCol, e.CreationDate()),
 				handler.NewCol(UserSequenceCol, e.Sequence()),
@@ -622,7 +695,7 @@ func (p *userProjection) reduceHumanPhoneChanged(event eventstore.Event) (*handl
 				handler.NewCond(UserInstanceIDCol, e.Aggregate().InstanceID),
 			},
 		),
-		crdb.AddUpdateStatement(
+		handler.AddUpdateStatement(
 			[]handler.Column{
 				handler.NewCol(HumanPhoneCol, e.PhoneNumber),
 				handler.NewCol(HumanIsPhoneVerifiedCol, false),
@@ -631,17 +704,17 @@ func (p *userProjection) reduceHumanPhoneChanged(event eventstore.Event) (*handl
 				handler.NewCond(HumanUserIDCol, e.Aggregate().ID),
 				handler.NewCond(HumanUserInstanceIDCol, e.Aggregate().InstanceID),
 			},
-			crdb.WithTableSuffix(UserHumanSuffix),
+			handler.WithTableSuffix(UserHumanSuffix),
 		),
-		crdb.AddUpdateStatement(
+		handler.AddUpdateStatement(
 			[]handler.Column{
-				handler.NewCol(NotifyLastPhoneCol, &sql.NullString{String: e.PhoneNumber, Valid: e.PhoneNumber != ""}),
+				handler.NewCol(NotifyLastPhoneCol, &sql.NullString{String: string(e.PhoneNumber), Valid: e.PhoneNumber != ""}),
 			},
 			[]handler.Condition{
 				handler.NewCond(NotifyUserIDCol, e.Aggregate().ID),
 				handler.NewCond(NotifyInstanceIDCol, e.Aggregate().InstanceID),
 			},
-			crdb.WithTableSuffix(UserNotifySuffix),
+			handler.WithTableSuffix(UserNotifySuffix),
 		),
 	), nil
 }
@@ -649,12 +722,12 @@ func (p *userProjection) reduceHumanPhoneChanged(event eventstore.Event) (*handl
 func (p *userProjection) reduceHumanPhoneRemoved(event eventstore.Event) (*handler.Statement, error) {
 	e, ok := event.(*user.HumanPhoneRemovedEvent)
 	if !ok {
-		return nil, errors.ThrowInvalidArgumentf(nil, "HANDL-JI4S1", "reduce.wrong.event.type %s", user.HumanPhoneRemovedType)
+		return nil, zerrors.ThrowInvalidArgumentf(nil, "HANDL-JI4S1", "reduce.wrong.event.type %s", user.HumanPhoneRemovedType)
 	}
 
-	return crdb.NewMultiStatement(
+	return handler.NewMultiStatement(
 		e,
-		crdb.AddUpdateStatement(
+		handler.AddUpdateStatement(
 			[]handler.Column{
 				handler.NewCol(UserChangeDateCol, e.CreationDate()),
 				handler.NewCol(UserSequenceCol, e.Sequence()),
@@ -664,7 +737,7 @@ func (p *userProjection) reduceHumanPhoneRemoved(event eventstore.Event) (*handl
 				handler.NewCond(UserInstanceIDCol, e.Aggregate().InstanceID),
 			},
 		),
-		crdb.AddUpdateStatement(
+		handler.AddUpdateStatement(
 			[]handler.Column{
 				handler.NewCol(HumanPhoneCol, nil),
 				handler.NewCol(HumanIsPhoneVerifiedCol, nil),
@@ -673,9 +746,9 @@ func (p *userProjection) reduceHumanPhoneRemoved(event eventstore.Event) (*handl
 				handler.NewCond(HumanUserIDCol, e.Aggregate().ID),
 				handler.NewCond(HumanUserInstanceIDCol, e.Aggregate().InstanceID),
 			},
-			crdb.WithTableSuffix(UserHumanSuffix),
+			handler.WithTableSuffix(UserHumanSuffix),
 		),
-		crdb.AddUpdateStatement(
+		handler.AddUpdateStatement(
 			[]handler.Column{
 				handler.NewCol(NotifyLastPhoneCol, nil),
 				handler.NewCol(NotifyVerifiedPhoneCol, nil),
@@ -684,7 +757,7 @@ func (p *userProjection) reduceHumanPhoneRemoved(event eventstore.Event) (*handl
 				handler.NewCond(NotifyUserIDCol, e.Aggregate().ID),
 				handler.NewCond(NotifyInstanceIDCol, e.Aggregate().InstanceID),
 			},
-			crdb.WithTableSuffix(UserNotifySuffix),
+			handler.WithTableSuffix(UserNotifySuffix),
 		),
 	), nil
 }
@@ -692,12 +765,12 @@ func (p *userProjection) reduceHumanPhoneRemoved(event eventstore.Event) (*handl
 func (p *userProjection) reduceHumanPhoneVerified(event eventstore.Event) (*handler.Statement, error) {
 	e, ok := event.(*user.HumanPhoneVerifiedEvent)
 	if !ok {
-		return nil, errors.ThrowInvalidArgumentf(nil, "HANDL-LBnqG", "reduce.wrong.event.type %s", user.HumanPhoneVerifiedType)
+		return nil, zerrors.ThrowInvalidArgumentf(nil, "HANDL-LBnqG", "reduce.wrong.event.type %s", user.HumanPhoneVerifiedType)
 	}
 
-	return crdb.NewMultiStatement(
+	return handler.NewMultiStatement(
 		e,
-		crdb.AddUpdateStatement(
+		handler.AddUpdateStatement(
 			[]handler.Column{
 				handler.NewCol(UserChangeDateCol, e.CreationDate()),
 				handler.NewCol(UserSequenceCol, e.Sequence()),
@@ -707,7 +780,7 @@ func (p *userProjection) reduceHumanPhoneVerified(event eventstore.Event) (*hand
 				handler.NewCond(UserInstanceIDCol, e.Aggregate().InstanceID),
 			},
 		),
-		crdb.AddUpdateStatement(
+		handler.AddUpdateStatement(
 			[]handler.Column{
 				handler.NewCol(HumanIsPhoneVerifiedCol, true),
 			},
@@ -715,17 +788,17 @@ func (p *userProjection) reduceHumanPhoneVerified(event eventstore.Event) (*hand
 				handler.NewCond(HumanUserIDCol, e.Aggregate().ID),
 				handler.NewCond(HumanUserInstanceIDCol, e.Aggregate().InstanceID),
 			},
-			crdb.WithTableSuffix(UserHumanSuffix),
+			handler.WithTableSuffix(UserHumanSuffix),
 		),
-		crdb.AddUpdateStatement(
+		handler.AddUpdateStatement(
 			[]handler.Column{
-				crdb.NewCopyCol(NotifyVerifiedPhoneCol, NotifyLastPhoneCol),
+				handler.NewCopyCol(NotifyVerifiedPhoneCol, NotifyLastPhoneCol),
 			},
 			[]handler.Condition{
 				handler.NewCond(NotifyUserIDCol, e.Aggregate().ID),
 				handler.NewCond(NotifyInstanceIDCol, e.Aggregate().InstanceID),
 			},
-			crdb.WithTableSuffix(UserNotifySuffix),
+			handler.WithTableSuffix(UserNotifySuffix),
 		),
 	), nil
 }
@@ -733,12 +806,12 @@ func (p *userProjection) reduceHumanPhoneVerified(event eventstore.Event) (*hand
 func (p *userProjection) reduceHumanEmailChanged(event eventstore.Event) (*handler.Statement, error) {
 	e, ok := event.(*user.HumanEmailChangedEvent)
 	if !ok {
-		return nil, errors.ThrowInvalidArgumentf(nil, "HANDL-KwiHa", "reduce.wrong.event.type %s", user.HumanEmailChangedType)
+		return nil, zerrors.ThrowInvalidArgumentf(nil, "HANDL-KwiHa", "reduce.wrong.event.type %s", user.HumanEmailChangedType)
 	}
 
-	return crdb.NewMultiStatement(
+	return handler.NewMultiStatement(
 		e,
-		crdb.AddUpdateStatement(
+		handler.AddUpdateStatement(
 			[]handler.Column{
 				handler.NewCol(UserChangeDateCol, e.CreationDate()),
 				handler.NewCol(UserSequenceCol, e.Sequence()),
@@ -748,7 +821,7 @@ func (p *userProjection) reduceHumanEmailChanged(event eventstore.Event) (*handl
 				handler.NewCond(UserInstanceIDCol, e.Aggregate().InstanceID),
 			},
 		),
-		crdb.AddUpdateStatement(
+		handler.AddUpdateStatement(
 			[]handler.Column{
 				handler.NewCol(HumanEmailCol, e.EmailAddress),
 				handler.NewCol(HumanIsEmailVerifiedCol, false),
@@ -757,17 +830,17 @@ func (p *userProjection) reduceHumanEmailChanged(event eventstore.Event) (*handl
 				handler.NewCond(HumanUserIDCol, e.Aggregate().ID),
 				handler.NewCond(HumanUserInstanceIDCol, e.Aggregate().InstanceID),
 			},
-			crdb.WithTableSuffix(UserHumanSuffix),
+			handler.WithTableSuffix(UserHumanSuffix),
 		),
-		crdb.AddUpdateStatement(
+		handler.AddUpdateStatement(
 			[]handler.Column{
-				handler.NewCol(NotifyLastEmailCol, &sql.NullString{String: e.EmailAddress, Valid: e.EmailAddress != ""}),
+				handler.NewCol(NotifyLastEmailCol, &sql.NullString{String: string(e.EmailAddress), Valid: e.EmailAddress != ""}),
 			},
 			[]handler.Condition{
 				handler.NewCond(NotifyUserIDCol, e.Aggregate().ID),
 				handler.NewCond(NotifyInstanceIDCol, e.Aggregate().InstanceID),
 			},
-			crdb.WithTableSuffix(UserNotifySuffix),
+			handler.WithTableSuffix(UserNotifySuffix),
 		),
 	), nil
 }
@@ -775,12 +848,12 @@ func (p *userProjection) reduceHumanEmailChanged(event eventstore.Event) (*handl
 func (p *userProjection) reduceHumanEmailVerified(event eventstore.Event) (*handler.Statement, error) {
 	e, ok := event.(*user.HumanEmailVerifiedEvent)
 	if !ok {
-		return nil, errors.ThrowInvalidArgumentf(nil, "HANDL-JzcDq", "reduce.wrong.event.type %s", user.HumanEmailVerifiedType)
+		return nil, zerrors.ThrowInvalidArgumentf(nil, "HANDL-JzcDq", "reduce.wrong.event.type %s", user.HumanEmailVerifiedType)
 	}
 
-	return crdb.NewMultiStatement(
+	return handler.NewMultiStatement(
 		e,
-		crdb.AddUpdateStatement(
+		handler.AddUpdateStatement(
 			[]handler.Column{
 				handler.NewCol(UserChangeDateCol, e.CreationDate()),
 				handler.NewCol(UserSequenceCol, e.Sequence()),
@@ -790,7 +863,7 @@ func (p *userProjection) reduceHumanEmailVerified(event eventstore.Event) (*hand
 				handler.NewCond(UserInstanceIDCol, e.Aggregate().InstanceID),
 			},
 		),
-		crdb.AddUpdateStatement(
+		handler.AddUpdateStatement(
 			[]handler.Column{
 				handler.NewCol(HumanIsEmailVerifiedCol, true),
 			},
@@ -798,17 +871,17 @@ func (p *userProjection) reduceHumanEmailVerified(event eventstore.Event) (*hand
 				handler.NewCond(HumanUserIDCol, e.Aggregate().ID),
 				handler.NewCond(HumanUserInstanceIDCol, e.Aggregate().InstanceID),
 			},
-			crdb.WithTableSuffix(UserHumanSuffix),
+			handler.WithTableSuffix(UserHumanSuffix),
 		),
-		crdb.AddUpdateStatement(
+		handler.AddUpdateStatement(
 			[]handler.Column{
-				crdb.NewCopyCol(NotifyVerifiedEmailCol, NotifyLastEmailCol),
+				handler.NewCopyCol(NotifyVerifiedEmailCol, NotifyLastEmailCol),
 			},
 			[]handler.Condition{
 				handler.NewCond(NotifyUserIDCol, e.Aggregate().ID),
 				handler.NewCond(NotifyInstanceIDCol, e.Aggregate().InstanceID),
 			},
-			crdb.WithTableSuffix(UserNotifySuffix),
+			handler.WithTableSuffix(UserNotifySuffix),
 		),
 	), nil
 }
@@ -816,12 +889,12 @@ func (p *userProjection) reduceHumanEmailVerified(event eventstore.Event) (*hand
 func (p *userProjection) reduceHumanAvatarAdded(event eventstore.Event) (*handler.Statement, error) {
 	e, ok := event.(*user.HumanAvatarAddedEvent)
 	if !ok {
-		return nil, errors.ThrowInvalidArgumentf(nil, "HANDL-eDEdt", "reduce.wrong.event.type %s", user.HumanAvatarAddedType)
+		return nil, zerrors.ThrowInvalidArgumentf(nil, "HANDL-eDEdt", "reduce.wrong.event.type %s", user.HumanAvatarAddedType)
 	}
 
-	return crdb.NewMultiStatement(
+	return handler.NewMultiStatement(
 		e,
-		crdb.AddUpdateStatement(
+		handler.AddUpdateStatement(
 			[]handler.Column{
 				handler.NewCol(UserChangeDateCol, e.CreationDate()),
 				handler.NewCol(UserSequenceCol, e.Sequence()),
@@ -831,7 +904,7 @@ func (p *userProjection) reduceHumanAvatarAdded(event eventstore.Event) (*handle
 				handler.NewCond(UserInstanceIDCol, e.Aggregate().InstanceID),
 			},
 		),
-		crdb.AddUpdateStatement(
+		handler.AddUpdateStatement(
 			[]handler.Column{
 				handler.NewCol(HumanAvatarURLCol, e.StoreKey),
 			},
@@ -839,7 +912,7 @@ func (p *userProjection) reduceHumanAvatarAdded(event eventstore.Event) (*handle
 				handler.NewCond(HumanUserIDCol, e.Aggregate().ID),
 				handler.NewCond(HumanUserInstanceIDCol, e.Aggregate().InstanceID),
 			},
-			crdb.WithTableSuffix(UserHumanSuffix),
+			handler.WithTableSuffix(UserHumanSuffix),
 		),
 	), nil
 }
@@ -847,12 +920,12 @@ func (p *userProjection) reduceHumanAvatarAdded(event eventstore.Event) (*handle
 func (p *userProjection) reduceHumanAvatarRemoved(event eventstore.Event) (*handler.Statement, error) {
 	e, ok := event.(*user.HumanAvatarRemovedEvent)
 	if !ok {
-		return nil, errors.ThrowInvalidArgumentf(nil, "HANDL-KhETX", "reduce.wrong.event.type %s", user.HumanAvatarRemovedType)
+		return nil, zerrors.ThrowInvalidArgumentf(nil, "HANDL-KhETX", "reduce.wrong.event.type %s", user.HumanAvatarRemovedType)
 	}
 
-	return crdb.NewMultiStatement(
+	return handler.NewMultiStatement(
 		e,
-		crdb.AddUpdateStatement(
+		handler.AddUpdateStatement(
 			[]handler.Column{
 				handler.NewCol(UserChangeDateCol, e.CreationDate()),
 				handler.NewCol(UserSequenceCol, e.Sequence()),
@@ -862,7 +935,7 @@ func (p *userProjection) reduceHumanAvatarRemoved(event eventstore.Event) (*hand
 				handler.NewCond(UserInstanceIDCol, e.Aggregate().InstanceID),
 			},
 		),
-		crdb.AddUpdateStatement(
+		handler.AddUpdateStatement(
 			[]handler.Column{
 				handler.NewCol(HumanAvatarURLCol, nil),
 			},
@@ -870,7 +943,7 @@ func (p *userProjection) reduceHumanAvatarRemoved(event eventstore.Event) (*hand
 				handler.NewCond(HumanUserIDCol, e.Aggregate().ID),
 				handler.NewCond(HumanUserInstanceIDCol, e.Aggregate().InstanceID),
 			},
-			crdb.WithTableSuffix(UserHumanSuffix),
+			handler.WithTableSuffix(UserHumanSuffix),
 		),
 	), nil
 }
@@ -878,31 +951,134 @@ func (p *userProjection) reduceHumanAvatarRemoved(event eventstore.Event) (*hand
 func (p *userProjection) reduceHumanPasswordChanged(event eventstore.Event) (*handler.Statement, error) {
 	e, ok := event.(*user.HumanPasswordChangedEvent)
 	if !ok {
-		return nil, errors.ThrowInvalidArgumentf(nil, "HANDL-jqXUY", "reduce.wrong.event.type %s", user.HumanPasswordChangedType)
+		return nil, zerrors.ThrowInvalidArgumentf(nil, "HANDL-jqXUY", "reduce.wrong.event.type %s", user.HumanPasswordChangedType)
+	}
+	return handler.NewMultiStatement(
+		e,
+		handler.AddUpdateStatement(
+			[]handler.Column{
+				handler.NewCol(HumanPasswordChangeRequired, e.ChangeRequired),
+				handler.NewCol(HumanPasswordChanged, &sql.NullTime{Time: e.CreatedAt(), Valid: true}),
+			},
+			[]handler.Condition{
+				handler.NewCond(HumanUserIDCol, e.Aggregate().ID),
+				handler.NewCond(HumanUserInstanceIDCol, e.Aggregate().InstanceID),
+			},
+			handler.WithTableSuffix(UserHumanSuffix),
+		),
+		handler.AddUpdateStatement(
+			[]handler.Column{
+				handler.NewCol(NotifyPasswordSetCol, true),
+			},
+			[]handler.Condition{
+				handler.NewCond(NotifyUserIDCol, e.Aggregate().ID),
+				handler.NewCond(NotifyInstanceIDCol, e.Aggregate().InstanceID),
+			},
+			handler.WithTableSuffix(UserNotifySuffix),
+		),
+	), nil
+}
+
+func (p *userProjection) reduceMachineSecretSet(event eventstore.Event) (*handler.Statement, error) {
+	e, ok := event.(*user.MachineSecretSetEvent)
+	if !ok {
+		return nil, zerrors.ThrowInvalidArgumentf(nil, "HANDL-x0p1n1i", "reduce.wrong.event.type %s", user.MachineSecretSetType)
+	}
+	return handler.NewMultiStatement(
+		e,
+		handler.AddUpdateStatement(
+			[]handler.Column{
+				handler.NewCol(UserChangeDateCol, e.CreationDate()),
+				handler.NewCol(UserSequenceCol, e.Sequence()),
+			},
+			[]handler.Condition{
+				handler.NewCond(UserIDCol, e.Aggregate().ID),
+				handler.NewCond(UserInstanceIDCol, e.Aggregate().InstanceID),
+			},
+		),
+		handler.AddUpdateStatement(
+			[]handler.Column{
+				handler.NewCol(MachineSecretCol, crypto.SecretOrEncodedHash(e.ClientSecret, e.HashedSecret)),
+			},
+			[]handler.Condition{
+				handler.NewCond(MachineUserIDCol, e.Aggregate().ID),
+				handler.NewCond(MachineUserInstanceIDCol, e.Aggregate().InstanceID),
+			},
+			handler.WithTableSuffix(UserMachineSuffix),
+		),
+	), nil
+}
+
+func (p *userProjection) reduceMachineSecretHashUpdated(event eventstore.Event) (*handler.Statement, error) {
+	e, ok := event.(*user.MachineSecretHashUpdatedEvent)
+	if !ok {
+		return nil, zerrors.ThrowInvalidArgumentf(nil, "HANDL-Wieng4u", "reduce.wrong.event.type %s", user.MachineSecretHashUpdatedType)
+	}
+	return handler.NewMultiStatement(
+		e,
+		handler.AddUpdateStatement(
+			[]handler.Column{
+				handler.NewCol(UserChangeDateCol, e.CreationDate()),
+				handler.NewCol(UserSequenceCol, e.Sequence()),
+			},
+			[]handler.Condition{
+				handler.NewCond(UserIDCol, e.Aggregate().ID),
+				handler.NewCond(UserInstanceIDCol, e.Aggregate().InstanceID),
+			},
+		),
+		handler.AddUpdateStatement(
+			[]handler.Column{
+				handler.NewCol(MachineSecretCol, e.HashedSecret),
+			},
+			[]handler.Condition{
+				handler.NewCond(MachineUserIDCol, e.Aggregate().ID),
+				handler.NewCond(MachineUserInstanceIDCol, e.Aggregate().InstanceID),
+			},
+			handler.WithTableSuffix(UserMachineSuffix),
+		),
+	), nil
+}
+
+func (p *userProjection) reduceMachineSecretRemoved(event eventstore.Event) (*handler.Statement, error) {
+	e, ok := event.(*user.MachineSecretRemovedEvent)
+	if !ok {
+		return nil, zerrors.ThrowInvalidArgumentf(nil, "HANDL-x0p6n1i", "reduce.wrong.event.type %s", user.MachineSecretRemovedType)
 	}
 
-	return crdb.NewUpdateStatement(
+	return handler.NewMultiStatement(
 		e,
-		[]handler.Column{
-			handler.NewCol(NotifyPasswordSetCol, true),
-		},
-		[]handler.Condition{
-			handler.NewCond(NotifyUserIDCol, e.Aggregate().ID),
-			handler.NewCond(NotifyInstanceIDCol, e.Aggregate().InstanceID),
-		},
-		crdb.WithTableSuffix(UserNotifySuffix),
+		handler.AddUpdateStatement(
+			[]handler.Column{
+				handler.NewCol(UserChangeDateCol, e.CreationDate()),
+				handler.NewCol(UserSequenceCol, e.Sequence()),
+			},
+			[]handler.Condition{
+				handler.NewCond(UserIDCol, e.Aggregate().ID),
+				handler.NewCond(UserInstanceIDCol, e.Aggregate().InstanceID),
+			},
+		),
+		handler.AddUpdateStatement(
+			[]handler.Column{
+				handler.NewCol(MachineSecretCol, nil),
+			},
+			[]handler.Condition{
+				handler.NewCond(MachineUserIDCol, e.Aggregate().ID),
+				handler.NewCond(MachineUserInstanceIDCol, e.Aggregate().InstanceID),
+			},
+			handler.WithTableSuffix(UserMachineSuffix),
+		),
 	), nil
 }
 
 func (p *userProjection) reduceMachineAdded(event eventstore.Event) (*handler.Statement, error) {
 	e, ok := event.(*user.MachineAddedEvent)
 	if !ok {
-		return nil, errors.ThrowInvalidArgumentf(nil, "HANDL-q7ier", "reduce.wrong.event.type %s", user.MachineAddedEventType)
+		return nil, zerrors.ThrowInvalidArgumentf(nil, "HANDL-q7ier", "reduce.wrong.event.type %s", user.MachineAddedEventType)
 	}
 
-	return crdb.NewMultiStatement(
+	return handler.NewMultiStatement(
 		e,
-		crdb.AddCreateStatement(
+		handler.AddCreateStatement(
 			[]handler.Column{
 				handler.NewCol(UserIDCol, e.Aggregate().ID),
 				handler.NewCol(UserCreationDateCol, e.CreationDate()),
@@ -915,14 +1091,15 @@ func (p *userProjection) reduceMachineAdded(event eventstore.Event) (*handler.St
 				handler.NewCol(UserTypeCol, domain.UserTypeMachine),
 			},
 		),
-		crdb.AddCreateStatement(
+		handler.AddCreateStatement(
 			[]handler.Column{
 				handler.NewCol(MachineUserIDCol, e.Aggregate().ID),
 				handler.NewCol(MachineUserInstanceIDCol, e.Aggregate().InstanceID),
 				handler.NewCol(MachineNameCol, e.Name),
 				handler.NewCol(MachineDescriptionCol, &sql.NullString{String: e.Description, Valid: e.Description != ""}),
+				handler.NewCol(MachineAccessTokenTypeCol, e.AccessTokenType),
 			},
-			crdb.WithTableSuffix(UserMachineSuffix),
+			handler.WithTableSuffix(UserMachineSuffix),
 		),
 	), nil
 }
@@ -930,7 +1107,7 @@ func (p *userProjection) reduceMachineAdded(event eventstore.Event) (*handler.St
 func (p *userProjection) reduceMachineChanged(event eventstore.Event) (*handler.Statement, error) {
 	e, ok := event.(*user.MachineChangedEvent)
 	if !ok {
-		return nil, errors.ThrowInvalidArgumentf(nil, "HANDL-qYHvj", "reduce.wrong.event.type %s", user.MachineChangedEventType)
+		return nil, zerrors.ThrowInvalidArgumentf(nil, "HANDL-qYHvj", "reduce.wrong.event.type %s", user.MachineChangedEventType)
 	}
 
 	cols := make([]handler.Column, 0, 2)
@@ -940,13 +1117,16 @@ func (p *userProjection) reduceMachineChanged(event eventstore.Event) (*handler.
 	if e.Description != nil {
 		cols = append(cols, handler.NewCol(MachineDescriptionCol, *e.Description))
 	}
+	if e.AccessTokenType != nil {
+		cols = append(cols, handler.NewCol(MachineAccessTokenTypeCol, e.AccessTokenType))
+	}
 	if len(cols) == 0 {
-		return crdb.NewNoOpStatement(e), nil
+		return handler.NewNoOpStatement(e), nil
 	}
 
-	return crdb.NewMultiStatement(
+	return handler.NewMultiStatement(
 		e,
-		crdb.AddUpdateStatement(
+		handler.AddUpdateStatement(
 			[]handler.Column{
 				handler.NewCol(UserChangeDateCol, e.CreationDate()),
 				handler.NewCol(UserSequenceCol, e.Sequence()),
@@ -956,13 +1136,74 @@ func (p *userProjection) reduceMachineChanged(event eventstore.Event) (*handler.
 				handler.NewCond(UserInstanceIDCol, e.Aggregate().InstanceID),
 			},
 		),
-		crdb.AddUpdateStatement(
+		handler.AddUpdateStatement(
 			cols,
 			[]handler.Condition{
 				handler.NewCond(MachineUserIDCol, e.Aggregate().ID),
 				handler.NewCond(MachineUserInstanceIDCol, e.Aggregate().InstanceID),
 			},
-			crdb.WithTableSuffix(UserMachineSuffix),
+			handler.WithTableSuffix(UserMachineSuffix),
 		),
+	), nil
+
+}
+
+func (p *userProjection) reduceUnsetMFAInitSkipped(e eventstore.Event) (*handler.Statement, error) {
+	switch e.(type) {
+	default:
+		return nil, zerrors.ThrowInvalidArgumentf(nil, "HANDL-ojrf6", "reduce.wrong.event.type %s", e.Type())
+	case *user.HumanOTPVerifiedEvent,
+		*user.HumanOTPSMSAddedEvent,
+		*user.HumanOTPEmailAddedEvent,
+		*user.HumanU2FVerifiedEvent,
+		*user.HumanPasswordlessVerifiedEvent:
+	}
+
+	return handler.NewUpdateStatement(
+		e,
+		[]handler.Column{
+			handler.NewCol(HumanMFAInitSkipped, sql.NullTime{}),
+		},
+		[]handler.Condition{
+			handler.NewCond(HumanUserIDCol, e.Aggregate().ID),
+			handler.NewCond(HumanUserInstanceIDCol, e.Aggregate().InstanceID),
+		},
+		handler.WithTableSuffix(UserHumanSuffix),
+	), nil
+}
+
+func (p *userProjection) reduceMFAInitSkipped(event eventstore.Event) (*handler.Statement, error) {
+	e, ok := event.(*user.HumanMFAInitSkippedEvent)
+	if !ok {
+		return nil, zerrors.ThrowInvalidArgumentf(nil, "HANDL-qYHvj", "reduce.wrong.event.type %s", user.MachineChangedEventType)
+	}
+	return handler.NewUpdateStatement(
+		e,
+		[]handler.Column{
+			handler.NewCol(HumanMFAInitSkipped, sql.NullTime{
+				Time:  e.CreatedAt(),
+				Valid: true,
+			}),
+		},
+		[]handler.Condition{
+			handler.NewCond(HumanUserIDCol, e.Aggregate().ID),
+			handler.NewCond(HumanUserInstanceIDCol, e.Aggregate().InstanceID),
+		},
+		handler.WithTableSuffix(UserHumanSuffix),
+	), nil
+}
+
+func (p *userProjection) reduceOwnerRemoved(event eventstore.Event) (*handler.Statement, error) {
+	e, ok := event.(*org.OrgRemovedEvent)
+	if !ok {
+		return nil, zerrors.ThrowInvalidArgumentf(nil, "PROJE-NCsdV", "reduce.wrong.event.type %s", org.OrgRemovedEventType)
+	}
+
+	return handler.NewDeleteStatement(
+		e,
+		[]handler.Condition{
+			handler.NewCond(UserInstanceIDCol, e.Aggregate().InstanceID),
+			handler.NewCond(UserResourceOwnerCol, e.Aggregate().ID),
+		},
 	), nil
 }

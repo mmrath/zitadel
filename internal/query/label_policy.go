@@ -3,15 +3,17 @@ package query
 import (
 	"context"
 	"database/sql"
-	errs "errors"
+	"errors"
 	"time"
 
 	sq "github.com/Masterminds/squirrel"
 
 	"github.com/zitadel/zitadel/internal/api/authz"
+	"github.com/zitadel/zitadel/internal/api/call"
 	"github.com/zitadel/zitadel/internal/domain"
-	"github.com/zitadel/zitadel/internal/errors"
 	"github.com/zitadel/zitadel/internal/query/projection"
+	"github.com/zitadel/zitadel/internal/telemetry/tracing"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 type LabelPolicy struct {
@@ -26,6 +28,7 @@ type LabelPolicy struct {
 	FontURL             string
 	WatermarkDisabled   bool
 	ShouldErrorPopup    bool
+	ThemeMode           domain.LabelPolicyThemeMode
 
 	Dark  Theme
 	Light Theme
@@ -40,35 +43,44 @@ type Theme struct {
 	IconURL         string
 }
 
-func (q *Queries) ActiveLabelPolicyByOrg(ctx context.Context, orgID string) (*LabelPolicy, error) {
-	stmt, scan := prepareLabelPolicyQuery()
+func (q *Queries) ActiveLabelPolicyByOrg(ctx context.Context, orgID string, withOwnerRemoved bool) (policy *LabelPolicy, err error) {
+	ctx, span := tracing.NewSpan(ctx)
+	defer func() { span.EndWithError(err) }()
+
+	stmt, scan := prepareLabelPolicyQuery(ctx, q.client)
+	eq := sq.Eq{
+		LabelPolicyColState.identifier():      domain.LabelPolicyStateActive,
+		LabelPolicyColInstanceID.identifier(): authz.GetInstance(ctx).InstanceID(),
+	}
+	if !withOwnerRemoved {
+		eq[LabelPolicyOwnerRemoved.identifier()] = false
+	}
 	query, args, err := stmt.Where(
 		sq.And{
 			sq.Or{
-				sq.Eq{
-					LabelPolicyColID.identifier(): orgID,
-				},
-				sq.Eq{
-					LabelPolicyColID.identifier(): authz.GetInstance(ctx).InstanceID(),
-				},
+				sq.Eq{LabelPolicyColID.identifier(): orgID},
+				sq.Eq{LabelPolicyColID.identifier(): authz.GetInstance(ctx).InstanceID()},
 			},
-			sq.Eq{
-				LabelPolicyColState.identifier():      domain.LabelPolicyStateActive,
-				LabelPolicyColInstanceID.identifier(): authz.GetInstance(ctx).InstanceID(),
-			},
+			eq,
 		}).
 		OrderBy(LabelPolicyColIsDefault.identifier()).
 		Limit(1).ToSql()
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "QUERY-V22un", "unable to create sql stmt")
+		return nil, zerrors.ThrowInternal(err, "QUERY-V22un", "unable to create sql stmt")
 	}
 
-	row := q.client.QueryRowContext(ctx, query, args...)
-	return scan(row)
+	err = q.client.QueryRowContext(ctx, func(row *sql.Row) error {
+		policy, err = scan(row)
+		return err
+	}, query, args...)
+	return policy, err
 }
 
-func (q *Queries) PreviewLabelPolicyByOrg(ctx context.Context, orgID string) (*LabelPolicy, error) {
-	stmt, scan := prepareLabelPolicyQuery()
+func (q *Queries) PreviewLabelPolicyByOrg(ctx context.Context, orgID string) (policy *LabelPolicy, err error) {
+	ctx, span := tracing.NewSpan(ctx)
+	defer func() { span.EndWithError(err) }()
+
+	stmt, scan := prepareLabelPolicyQuery(ctx, q.client)
 	query, args, err := stmt.Where(
 		sq.And{
 			sq.Or{
@@ -87,15 +99,21 @@ func (q *Queries) PreviewLabelPolicyByOrg(ctx context.Context, orgID string) (*L
 		OrderBy(LabelPolicyColIsDefault.identifier()).
 		Limit(1).ToSql()
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "QUERY-AG5eq", "unable to create sql stmt")
+		return nil, zerrors.ThrowInternal(err, "QUERY-AG5eq", "unable to create sql stmt")
 	}
 
-	row := q.client.QueryRowContext(ctx, query, args...)
-	return scan(row)
+	err = q.client.QueryRowContext(ctx, func(row *sql.Row) error {
+		policy, err = scan(row)
+		return err
+	}, query, args...)
+	return policy, err
 }
 
-func (q *Queries) DefaultActiveLabelPolicy(ctx context.Context) (*LabelPolicy, error) {
-	stmt, scan := prepareLabelPolicyQuery()
+func (q *Queries) DefaultActiveLabelPolicy(ctx context.Context) (policy *LabelPolicy, err error) {
+	ctx, span := tracing.NewSpan(ctx)
+	defer func() { span.EndWithError(err) }()
+
+	stmt, scan := prepareLabelPolicyQuery(ctx, q.client)
 	query, args, err := stmt.Where(sq.Eq{
 		LabelPolicyColID.identifier():         authz.GetInstance(ctx).InstanceID(),
 		LabelPolicyColState.identifier():      domain.LabelPolicyStateActive,
@@ -104,15 +122,21 @@ func (q *Queries) DefaultActiveLabelPolicy(ctx context.Context) (*LabelPolicy, e
 		OrderBy(LabelPolicyColIsDefault.identifier()).
 		Limit(1).ToSql()
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "QUERY-mN0Ci", "unable to create sql stmt")
+		return nil, zerrors.ThrowInternal(err, "QUERY-mN0Ci", "unable to create sql stmt")
 	}
 
-	row := q.client.QueryRowContext(ctx, query, args...)
-	return scan(row)
+	err = q.client.QueryRowContext(ctx, func(row *sql.Row) error {
+		policy, err = scan(row)
+		return err
+	}, query, args...)
+	return policy, err
 }
 
-func (q *Queries) DefaultPreviewLabelPolicy(ctx context.Context) (*LabelPolicy, error) {
-	stmt, scan := prepareLabelPolicyQuery()
+func (q *Queries) DefaultPreviewLabelPolicy(ctx context.Context) (policy *LabelPolicy, err error) {
+	ctx, span := tracing.NewSpan(ctx)
+	defer func() { span.EndWithError(err) }()
+
+	stmt, scan := prepareLabelPolicyQuery(ctx, q.client)
 	query, args, err := stmt.Where(sq.Eq{
 		LabelPolicyColID.identifier():         authz.GetInstance(ctx).InstanceID(),
 		LabelPolicyColState.identifier():      domain.LabelPolicyStatePreview,
@@ -121,11 +145,14 @@ func (q *Queries) DefaultPreviewLabelPolicy(ctx context.Context) (*LabelPolicy, 
 		OrderBy(LabelPolicyColIsDefault.identifier()).
 		Limit(1).ToSql()
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "QUERY-B3JQR", "unable to create sql stmt")
+		return nil, zerrors.ThrowInternal(err, "QUERY-B3JQR", "unable to create sql stmt")
 	}
 
-	row := q.client.QueryRowContext(ctx, query, args...)
-	return scan(row)
+	err = q.client.QueryRowContext(ctx, func(row *sql.Row) error {
+		policy, err = scan(row)
+		return err
+	}, query, args...)
+	return policy, err
 }
 
 var (
@@ -205,9 +232,15 @@ var (
 	LabelPolicyColDarkIconURL = Column{
 		name: projection.LabelPolicyDarkIconURLCol,
 	}
+	LabelPolicyOwnerRemoved = Column{
+		name: projection.LabelPolicyOwnerRemovedCol,
+	}
+	LabelPolicyThemeMode = Column{
+		name: projection.LabelPolicyThemeModeCol,
+	}
 )
 
-func prepareLabelPolicyQuery() (sq.SelectBuilder, func(*sql.Row) (*LabelPolicy, error)) {
+func prepareLabelPolicyQuery(ctx context.Context, db prepareDatabase) (sq.SelectBuilder, func(*sql.Row) (*LabelPolicy, error)) {
 	return sq.Select(
 			LabelPolicyColCreationDate.identifier(),
 			LabelPolicyColChangeDate.identifier(),
@@ -221,6 +254,7 @@ func prepareLabelPolicyQuery() (sq.SelectBuilder, func(*sql.Row) (*LabelPolicy, 
 			LabelPolicyColFontURL.identifier(),
 			LabelPolicyColWatermarkDisabled.identifier(),
 			LabelPolicyColShouldErrorPopup.identifier(),
+			LabelPolicyThemeMode.identifier(),
 
 			LabelPolicyColLightPrimaryColor.identifier(),
 			LabelPolicyColLightWarnColor.identifier(),
@@ -236,7 +270,8 @@ func prepareLabelPolicyQuery() (sq.SelectBuilder, func(*sql.Row) (*LabelPolicy, 
 			LabelPolicyColDarkLogoURL.identifier(),
 			LabelPolicyColDarkIconURL.identifier(),
 		).
-			From(labelPolicyTable.identifier()).PlaceholderFormat(sq.Dollar),
+			From(labelPolicyTable.identifier() + db.Timetravel(call.Took(ctx))).
+			PlaceholderFormat(sq.Dollar),
 		func(row *sql.Row) (*LabelPolicy, error) {
 			policy := new(LabelPolicy)
 
@@ -269,6 +304,7 @@ func prepareLabelPolicyQuery() (sq.SelectBuilder, func(*sql.Row) (*LabelPolicy, 
 				&fontURL,
 				&policy.WatermarkDisabled,
 				&policy.ShouldErrorPopup,
+				&policy.ThemeMode,
 
 				&lightPrimaryColor,
 				&lightWarnColor,
@@ -285,10 +321,10 @@ func prepareLabelPolicyQuery() (sq.SelectBuilder, func(*sql.Row) (*LabelPolicy, 
 				&darkIconURL,
 			)
 			if err != nil {
-				if errs.Is(err, sql.ErrNoRows) {
-					return nil, errors.ThrowNotFound(err, "QUERY-bJEsm", "Errors.Org.PolicyNotExisting")
+				if errors.Is(err, sql.ErrNoRows) {
+					return nil, zerrors.ThrowNotFound(err, "QUERY-bJEsm", "Errors.Org.PolicyNotExisting")
 				}
-				return nil, errors.ThrowInternal(err, "QUERY-awLM6", "Errors.Internal")
+				return nil, zerrors.ThrowInternal(err, "QUERY-awLM6", "Errors.Internal")
 			}
 
 			policy.FontURL = fontURL.String
@@ -328,5 +364,6 @@ func (p *LabelPolicy) ToDomain() *domain.LabelPolicy {
 		HideLoginNameSuffix: p.HideLoginNameSuffix,
 		ErrorMsgPopup:       p.ShouldErrorPopup,
 		DisableWatermark:    p.WatermarkDisabled,
+		ThemeMode:           p.ThemeMode,
 	}
 }

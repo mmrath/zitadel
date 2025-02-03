@@ -37,7 +37,7 @@ func (s *Server) ListProjectGrants(ctx context.Context, req *mgmt_pb.ListProject
 	}
 	return &mgmt_pb.ListProjectGrantsResponse{
 		Result:  proj_grpc.GrantedProjectViewsToPb(grants.ProjectGrants),
-		Details: object_grpc.ToListDetails(grants.Count, grants.Sequence, grants.Timestamp),
+		Details: object_grpc.ToListDetails(grants.Count, grants.Sequence, grants.LastRun),
 	}, nil
 }
 
@@ -60,7 +60,7 @@ func (s *Server) ListAllProjectGrants(ctx context.Context, req *mgmt_pb.ListAllP
 	}
 	return &mgmt_pb.ListAllProjectGrantsResponse{
 		Result:  proj_grpc.GrantedProjectViewsToPb(grants.ProjectGrants),
-		Details: object_grpc.ToListDetails(grants.Count, grants.Sequence, grants.Timestamp),
+		Details: object_grpc.ToListDetails(grants.Count, grants.Sequence, grants.LastRun),
 	}, nil
 }
 
@@ -90,7 +90,7 @@ func (s *Server) UpdateProjectGrant(ctx context.Context, req *mgmt_pb.UpdateProj
 	}
 	grants, err := s.query.UserGrants(ctx, &query.UserGrantsQueries{
 		Queries: []query.SearchQuery{projectQuery, grantQuery},
-	})
+	}, true)
 	if err != nil {
 		return nil, err
 	}
@@ -138,7 +138,7 @@ func (s *Server) RemoveProjectGrant(ctx context.Context, req *mgmt_pb.RemoveProj
 	}
 	userGrants, err := s.query.UserGrants(ctx, &query.UserGrantsQueries{
 		Queries: []query.SearchQuery{projectQuery, grantQuery},
-	})
+	}, false)
 	if err != nil {
 		return nil, err
 	}
@@ -170,7 +170,7 @@ func (s *Server) ListProjectGrantMembers(ctx context.Context, req *mgmt_pb.ListP
 	}
 	return &mgmt_pb.ListProjectGrantMembersResponse{
 		Result:  member_grpc.MembersToPb(s.assetAPIPrefix(ctx), response.Members),
-		Details: object_grpc.ToListDetails(response.Count, response.Sequence, response.Timestamp),
+		Details: object_grpc.ToListDetails(response.Count, response.Sequence, response.LastRun),
 	}, nil
 }
 

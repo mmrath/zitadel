@@ -3,18 +3,21 @@ package query
 import (
 	"context"
 	"database/sql"
-	errs "errors"
+	"errors"
 	"time"
 
 	sq "github.com/Masterminds/squirrel"
+	"github.com/zitadel/logging"
 
 	"github.com/zitadel/zitadel/internal/api/authz"
-	"github.com/zitadel/zitadel/internal/database"
-
+	"github.com/zitadel/zitadel/internal/api/call"
 	"github.com/zitadel/zitadel/internal/crypto"
+	"github.com/zitadel/zitadel/internal/database"
 	"github.com/zitadel/zitadel/internal/domain"
-	"github.com/zitadel/zitadel/internal/errors"
+	"github.com/zitadel/zitadel/internal/eventstore/handler/v2"
 	"github.com/zitadel/zitadel/internal/query/projection"
+	"github.com/zitadel/zitadel/internal/telemetry/tracing"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 type IDP struct {
@@ -42,7 +45,7 @@ type OIDCIDP struct {
 	ClientID              string
 	ClientSecret          *crypto.CryptoValue
 	Issuer                string
-	Scopes                database.StringArray
+	Scopes                database.TextArray[string]
 	DisplayNameMapping    domain.OIDCMappingField
 	UsernameMapping       domain.OIDCMappingField
 	AuthorizationEndpoint string
@@ -108,6 +111,10 @@ var (
 	}
 	IDPTypeCol = Column{
 		name:  projection.IDPTypeCol,
+		table: idpTable,
+	}
+	IDPOwnerRemovedCol = Column{
+		name:  projection.IDPOwnerRemovedCol,
 		table: idpTable,
 	}
 )
@@ -183,56 +190,69 @@ var (
 )
 
 // IDPByIDAndResourceOwner searches for the requested id in the context of the resource owner and IAM
-func (q *Queries) IDPByIDAndResourceOwner(ctx context.Context, shouldTriggerBulk bool, id, resourceOwner string) (*IDP, error) {
+func (q *Queries) IDPByIDAndResourceOwner(ctx context.Context, shouldTriggerBulk bool, id, resourceOwner string, withOwnerRemoved bool) (idp *IDP, err error) {
+	ctx, span := tracing.NewSpan(ctx)
+	defer func() { span.EndWithError(err) }()
+
 	if shouldTriggerBulk {
-		projection.IDPProjection.Trigger(ctx)
+		_, traceSpan := tracing.NewNamedSpan(ctx, "TriggerIDPProjection")
+		ctx, err = projection.IDPProjection.Trigger(ctx, handler.WithAwaitRunning())
+		logging.OnError(err).Debug("trigger failed")
+		traceSpan.EndWithError(err)
 	}
 
-	stmt, scan := prepareIDPByIDQuery()
-	query, args, err := stmt.Where(
-		sq.And{
-			sq.Eq{
-				IDPIDCol.identifier():         id,
-				IDPInstanceIDCol.identifier(): authz.GetInstance(ctx).InstanceID(),
-			},
-			sq.Or{
-				sq.Eq{
-					IDPResourceOwnerCol.identifier(): resourceOwner,
-				},
-				sq.Eq{
-					IDPResourceOwnerCol.identifier(): authz.GetInstance(ctx).InstanceID(),
-				},
-			},
+	eq := sq.Eq{
+		IDPIDCol.identifier():         id,
+		IDPInstanceIDCol.identifier(): authz.GetInstance(ctx).InstanceID(),
+	}
+	if !withOwnerRemoved {
+		eq[IDPOwnerRemovedCol.identifier()] = false
+	}
+	where := sq.And{
+		eq,
+		sq.Or{
+			sq.Eq{IDPResourceOwnerCol.identifier(): resourceOwner},
+			sq.Eq{IDPResourceOwnerCol.identifier(): authz.GetInstance(ctx).InstanceID()},
 		},
-	).ToSql()
+	}
+	stmt, scan := prepareIDPByIDQuery(ctx, q.client)
+	query, args, err := stmt.Where(where).ToSql()
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "QUERY-0gocI", "Errors.Query.SQLStatement")
+		return nil, zerrors.ThrowInternal(err, "QUERY-0gocI", "Errors.Query.SQLStatement")
 	}
 
-	row := q.client.QueryRowContext(ctx, query, args...)
-	return scan(row)
+	err = q.client.QueryRowContext(ctx, func(row *sql.Row) error {
+		idp, err = scan(row)
+		return err
+	}, query, args...)
+	return idp, err
 }
 
 // IDPs searches idps matching the query
-func (q *Queries) IDPs(ctx context.Context, queries *IDPSearchQueries) (idps *IDPs, err error) {
-	query, scan := prepareIDPsQuery()
-	stmt, args, err := queries.toQuery(query).
-		Where(sq.Eq{
-			IDPInstanceIDCol.identifier(): authz.GetInstance(ctx).InstanceID(),
-		}).ToSql()
+func (q *Queries) IDPs(ctx context.Context, queries *IDPSearchQueries, withOwnerRemoved bool) (idps *IDPs, err error) {
+	ctx, span := tracing.NewSpan(ctx)
+	defer func() { span.EndWithError(err) }()
+
+	query, scan := prepareIDPsQuery(ctx, q.client)
+	eq := sq.Eq{
+		IDPInstanceIDCol.identifier(): authz.GetInstance(ctx).InstanceID(),
+	}
+	if !withOwnerRemoved {
+		eq[IDPOwnerRemovedCol.identifier()] = false
+	}
+	stmt, args, err := queries.toQuery(query).Where(eq).ToSql()
 	if err != nil {
-		return nil, errors.ThrowInvalidArgument(err, "QUERY-X6X7y", "Errors.Query.InvalidRequest")
+		return nil, zerrors.ThrowInvalidArgument(err, "QUERY-X6X7y", "Errors.Query.InvalidRequest")
 	}
 
-	rows, err := q.client.QueryContext(ctx, stmt, args...)
+	err = q.client.QueryContext(ctx, func(rows *sql.Rows) error {
+		idps, err = scan(rows)
+		return err
+	}, stmt, args...)
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "QUERY-xPlVH", "Errors.Internal")
+		return nil, zerrors.ThrowInternal(err, "QUERY-xPlVH", "Errors.Internal")
 	}
-	idps, err = scan(rows)
-	if err != nil {
-		return nil, err
-	}
-	idps.LatestSequence, err = q.latestSequence(ctx, idpTable)
+	idps.State, err = q.latestState(ctx, idpTable)
 	return idps, err
 }
 
@@ -273,7 +293,7 @@ func (q *IDPSearchQueries) toQuery(query sq.SelectBuilder) sq.SelectBuilder {
 	return query
 }
 
-func prepareIDPByIDQuery() (sq.SelectBuilder, func(*sql.Row) (*IDP, error)) {
+func prepareIDPByIDQuery(ctx context.Context, db prepareDatabase) (sq.SelectBuilder, func(*sql.Row) (*IDP, error)) {
 	return sq.Select(
 			IDPIDCol.identifier(),
 			IDPResourceOwnerCol.identifier(),
@@ -301,7 +321,7 @@ func prepareIDPByIDQuery() (sq.SelectBuilder, func(*sql.Row) (*IDP, error)) {
 			JWTIDPColEndpoint.identifier(),
 		).From(idpTable.identifier()).
 			LeftJoin(join(OIDCIDPColIDPID, IDPIDCol)).
-			LeftJoin(join(JWTIDPColIDPID, IDPIDCol)).
+			LeftJoin(join(JWTIDPColIDPID, IDPIDCol) + db.Timetravel(call.Took(ctx))).
 			PlaceholderFormat(sq.Dollar),
 		func(row *sql.Row) (*IDP, error) {
 			idp := new(IDP)
@@ -310,7 +330,7 @@ func prepareIDPByIDQuery() (sq.SelectBuilder, func(*sql.Row) (*IDP, error)) {
 			oidcClientID := sql.NullString{}
 			oidcClientSecret := new(crypto.CryptoValue)
 			oidcIssuer := sql.NullString{}
-			oidcScopes := database.StringArray{}
+			oidcScopes := database.TextArray[string]{}
 			oidcDisplayNameMapping := sql.NullInt32{}
 			oidcUsernameMapping := sql.NullInt32{}
 			oidcAuthorizationEndpoint := sql.NullString{}
@@ -349,10 +369,10 @@ func prepareIDPByIDQuery() (sq.SelectBuilder, func(*sql.Row) (*IDP, error)) {
 				&jwtEndpoint,
 			)
 			if err != nil {
-				if errs.Is(err, sql.ErrNoRows) {
-					return nil, errors.ThrowNotFound(err, "QUERY-rhR2o", "Errors.IDPConfig.NotExisting")
+				if errors.Is(err, sql.ErrNoRows) {
+					return nil, zerrors.ThrowNotFound(err, "QUERY-rhR2o", "Errors.IDPConfig.NotExisting")
 				}
-				return nil, errors.ThrowInternal(err, "QUERY-zE3Ro", "Errors.Internal")
+				return nil, zerrors.ThrowInternal(err, "QUERY-zE3Ro", "Errors.Internal")
 			}
 
 			if oidcIDPID.Valid {
@@ -381,7 +401,7 @@ func prepareIDPByIDQuery() (sq.SelectBuilder, func(*sql.Row) (*IDP, error)) {
 		}
 }
 
-func prepareIDPsQuery() (sq.SelectBuilder, func(*sql.Rows) (*IDPs, error)) {
+func prepareIDPsQuery(ctx context.Context, db prepareDatabase) (sq.SelectBuilder, func(*sql.Rows) (*IDPs, error)) {
 	return sq.Select(
 			IDPIDCol.identifier(),
 			IDPResourceOwnerCol.identifier(),
@@ -410,7 +430,7 @@ func prepareIDPsQuery() (sq.SelectBuilder, func(*sql.Rows) (*IDPs, error)) {
 			countColumn.identifier(),
 		).From(idpTable.identifier()).
 			LeftJoin(join(OIDCIDPColIDPID, IDPIDCol)).
-			LeftJoin(join(JWTIDPColIDPID, IDPIDCol)).
+			LeftJoin(join(JWTIDPColIDPID, IDPIDCol) + db.Timetravel(call.Took(ctx))).
 			PlaceholderFormat(sq.Dollar),
 		func(rows *sql.Rows) (*IDPs, error) {
 			idps := make([]*IDP, 0)
@@ -422,7 +442,7 @@ func prepareIDPsQuery() (sq.SelectBuilder, func(*sql.Rows) (*IDPs, error)) {
 				oidcClientID := sql.NullString{}
 				oidcClientSecret := new(crypto.CryptoValue)
 				oidcIssuer := sql.NullString{}
-				oidcScopes := database.StringArray{}
+				oidcScopes := database.TextArray[string]{}
 				oidcDisplayNameMapping := sql.NullInt32{}
 				oidcUsernameMapping := sql.NullInt32{}
 				oidcAuthorizationEndpoint := sql.NullString{}
@@ -494,7 +514,7 @@ func prepareIDPsQuery() (sq.SelectBuilder, func(*sql.Rows) (*IDPs, error)) {
 			}
 
 			if err := rows.Close(); err != nil {
-				return nil, errors.ThrowInternal(err, "QUERY-iiBgK", "Errors.Query.CloseRows")
+				return nil, zerrors.ThrowInternal(err, "QUERY-iiBgK", "Errors.Query.CloseRows")
 			}
 
 			return &IDPs{
@@ -506,8 +526,11 @@ func prepareIDPsQuery() (sq.SelectBuilder, func(*sql.Rows) (*IDPs, error)) {
 		}
 }
 
-func (q *Queries) GetOIDCIDPClientSecret(ctx context.Context, shouldRealTime bool, resourceowner, idpID string) (string, error) {
-	idp, err := q.IDPByIDAndResourceOwner(ctx, shouldRealTime, idpID, resourceowner)
+func (q *Queries) GetOIDCIDPClientSecret(ctx context.Context, shouldRealTime bool, resourceowner, idpID string, withOwnerRemoved bool) (_ string, err error) {
+	ctx, span := tracing.NewSpan(ctx)
+	defer func() { span.EndWithError(err) }()
+
+	idp, err := q.IDPByIDAndResourceOwner(ctx, shouldRealTime, idpID, resourceowner, withOwnerRemoved)
 	if err != nil {
 		return "", err
 	}
@@ -515,5 +538,5 @@ func (q *Queries) GetOIDCIDPClientSecret(ctx context.Context, shouldRealTime boo
 	if idp.ClientSecret != nil && idp.ClientSecret.Crypted != nil {
 		return crypto.DecryptString(idp.ClientSecret, q.idpConfigEncryption)
 	}
-	return "", errors.ThrowNotFound(nil, "QUERY-bsm2o", "Errors.Query.NotFound")
+	return "", zerrors.ThrowNotFound(nil, "QUERY-bsm2o", "Errors.Query.NotFound")
 }

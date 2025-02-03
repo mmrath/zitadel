@@ -11,37 +11,37 @@ import (
 	"github.com/zitadel/zitadel/internal/crypto"
 	"github.com/zitadel/zitadel/internal/database"
 	"github.com/zitadel/zitadel/internal/domain"
-	errs "github.com/zitadel/zitadel/internal/errors"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 var (
-	idpQuery = `SELECT projections.idps2.id,` +
-		` projections.idps2.resource_owner,` +
-		` projections.idps2.creation_date,` +
-		` projections.idps2.change_date,` +
-		` projections.idps2.sequence,` +
-		` projections.idps2.state,` +
-		` projections.idps2.name,` +
-		` projections.idps2.styling_type,` +
-		` projections.idps2.owner_type,` +
-		` projections.idps2.auto_register,` +
-		` projections.idps2_oidc_config.idp_id,` +
-		` projections.idps2_oidc_config.client_id,` +
-		` projections.idps2_oidc_config.client_secret,` +
-		` projections.idps2_oidc_config.issuer,` +
-		` projections.idps2_oidc_config.scopes,` +
-		` projections.idps2_oidc_config.display_name_mapping,` +
-		` projections.idps2_oidc_config.username_mapping,` +
-		` projections.idps2_oidc_config.authorization_endpoint,` +
-		` projections.idps2_oidc_config.token_endpoint,` +
-		` projections.idps2_jwt_config.idp_id,` +
-		` projections.idps2_jwt_config.issuer,` +
-		` projections.idps2_jwt_config.keys_endpoint,` +
-		` projections.idps2_jwt_config.header_name,` +
-		` projections.idps2_jwt_config.endpoint` +
-		` FROM projections.idps2` +
-		` LEFT JOIN projections.idps2_oidc_config ON projections.idps2.id = projections.idps2_oidc_config.idp_id AND projections.idps2.instance_id = projections.idps2_oidc_config.instance_id` +
-		` LEFT JOIN projections.idps2_jwt_config ON projections.idps2.id = projections.idps2_jwt_config.idp_id AND projections.idps2.instance_id = projections.idps2_jwt_config.instance_id`
+	idpQuery = `SELECT projections.idps3.id,` +
+		` projections.idps3.resource_owner,` +
+		` projections.idps3.creation_date,` +
+		` projections.idps3.change_date,` +
+		` projections.idps3.sequence,` +
+		` projections.idps3.state,` +
+		` projections.idps3.name,` +
+		` projections.idps3.styling_type,` +
+		` projections.idps3.owner_type,` +
+		` projections.idps3.auto_register,` +
+		` projections.idps3_oidc_config.idp_id,` +
+		` projections.idps3_oidc_config.client_id,` +
+		` projections.idps3_oidc_config.client_secret,` +
+		` projections.idps3_oidc_config.issuer,` +
+		` projections.idps3_oidc_config.scopes,` +
+		` projections.idps3_oidc_config.display_name_mapping,` +
+		` projections.idps3_oidc_config.username_mapping,` +
+		` projections.idps3_oidc_config.authorization_endpoint,` +
+		` projections.idps3_oidc_config.token_endpoint,` +
+		` projections.idps3_jwt_config.idp_id,` +
+		` projections.idps3_jwt_config.issuer,` +
+		` projections.idps3_jwt_config.keys_endpoint,` +
+		` projections.idps3_jwt_config.header_name,` +
+		` projections.idps3_jwt_config.endpoint` +
+		` FROM projections.idps3` +
+		` LEFT JOIN projections.idps3_oidc_config ON projections.idps3.id = projections.idps3_oidc_config.idp_id AND projections.idps3.instance_id = projections.idps3_oidc_config.instance_id` +
+		` LEFT JOIN projections.idps3_jwt_config ON projections.idps3.id = projections.idps3_jwt_config.idp_id AND projections.idps3.instance_id = projections.idps3_jwt_config.instance_id`
 	idpCols = []string{
 		"id",
 		"resource_owner",
@@ -70,34 +70,34 @@ var (
 		"header_name",
 		"endpoint",
 	}
-	idpsQuery = `SELECT projections.idps2.id,` +
-		` projections.idps2.resource_owner,` +
-		` projections.idps2.creation_date,` +
-		` projections.idps2.change_date,` +
-		` projections.idps2.sequence,` +
-		` projections.idps2.state,` +
-		` projections.idps2.name,` +
-		` projections.idps2.styling_type,` +
-		` projections.idps2.owner_type,` +
-		` projections.idps2.auto_register,` +
-		` projections.idps2_oidc_config.idp_id,` +
-		` projections.idps2_oidc_config.client_id,` +
-		` projections.idps2_oidc_config.client_secret,` +
-		` projections.idps2_oidc_config.issuer,` +
-		` projections.idps2_oidc_config.scopes,` +
-		` projections.idps2_oidc_config.display_name_mapping,` +
-		` projections.idps2_oidc_config.username_mapping,` +
-		` projections.idps2_oidc_config.authorization_endpoint,` +
-		` projections.idps2_oidc_config.token_endpoint,` +
-		` projections.idps2_jwt_config.idp_id,` +
-		` projections.idps2_jwt_config.issuer,` +
-		` projections.idps2_jwt_config.keys_endpoint,` +
-		` projections.idps2_jwt_config.header_name,` +
-		` projections.idps2_jwt_config.endpoint,` +
+	idpsQuery = `SELECT projections.idps3.id,` +
+		` projections.idps3.resource_owner,` +
+		` projections.idps3.creation_date,` +
+		` projections.idps3.change_date,` +
+		` projections.idps3.sequence,` +
+		` projections.idps3.state,` +
+		` projections.idps3.name,` +
+		` projections.idps3.styling_type,` +
+		` projections.idps3.owner_type,` +
+		` projections.idps3.auto_register,` +
+		` projections.idps3_oidc_config.idp_id,` +
+		` projections.idps3_oidc_config.client_id,` +
+		` projections.idps3_oidc_config.client_secret,` +
+		` projections.idps3_oidc_config.issuer,` +
+		` projections.idps3_oidc_config.scopes,` +
+		` projections.idps3_oidc_config.display_name_mapping,` +
+		` projections.idps3_oidc_config.username_mapping,` +
+		` projections.idps3_oidc_config.authorization_endpoint,` +
+		` projections.idps3_oidc_config.token_endpoint,` +
+		` projections.idps3_jwt_config.idp_id,` +
+		` projections.idps3_jwt_config.issuer,` +
+		` projections.idps3_jwt_config.keys_endpoint,` +
+		` projections.idps3_jwt_config.header_name,` +
+		` projections.idps3_jwt_config.endpoint,` +
 		` COUNT(*) OVER ()` +
-		` FROM projections.idps2` +
-		` LEFT JOIN projections.idps2_oidc_config ON projections.idps2.id = projections.idps2_oidc_config.idp_id AND projections.idps2.instance_id = projections.idps2_oidc_config.instance_id` +
-		` LEFT JOIN projections.idps2_jwt_config ON projections.idps2.id = projections.idps2_jwt_config.idp_id AND projections.idps2.instance_id = projections.idps2_jwt_config.instance_id`
+		` FROM projections.idps3` +
+		` LEFT JOIN projections.idps3_oidc_config ON projections.idps3.id = projections.idps3_oidc_config.idp_id AND projections.idps3.instance_id = projections.idps3_oidc_config.instance_id` +
+		` LEFT JOIN projections.idps3_jwt_config ON projections.idps3.id = projections.idps3_jwt_config.idp_id AND projections.idps3.instance_id = projections.idps3_jwt_config.instance_id`
 	idpsCols = []string{
 		"id",
 		"resource_owner",
@@ -144,13 +144,13 @@ func Test_IDPPrepares(t *testing.T) {
 			name:    "prepareIDPByIDQuery no result",
 			prepare: prepareIDPByIDQuery,
 			want: want{
-				sqlExpectations: mockQuery(
+				sqlExpectations: mockQueryScanErr(
 					regexp.QuoteMeta(idpQuery),
 					nil,
 					nil,
 				),
 				err: func(err error) (error, bool) {
-					if !errs.IsNotFound(err) {
+					if !zerrors.IsNotFound(err) {
 						return fmt.Errorf("err should be zitadel.NotFoundError got: %w", err), false
 					}
 					return nil, true
@@ -181,7 +181,7 @@ func Test_IDPPrepares(t *testing.T) {
 						"oidc-client-id",
 						nil,
 						"oidc-issuer",
-						database.StringArray{"scope"},
+						database.TextArray[string]{"scope"},
 						domain.OIDCMappingFieldEmail,
 						domain.OIDCMappingFieldPreferredLoginName,
 						"auth.endpoint.ch",
@@ -211,7 +211,7 @@ func Test_IDPPrepares(t *testing.T) {
 					ClientID:              "oidc-client-id",
 					ClientSecret:          &crypto.CryptoValue{},
 					Issuer:                "oidc-issuer",
-					Scopes:                database.StringArray{"scope"},
+					Scopes:                database.TextArray[string]{"scope"},
 					DisplayNameMapping:    domain.OIDCMappingFieldEmail,
 					UsernameMapping:       domain.OIDCMappingFieldPreferredLoginName,
 					AuthorizationEndpoint: "auth.endpoint.ch",
@@ -341,7 +341,7 @@ func Test_IDPPrepares(t *testing.T) {
 					return nil, true
 				},
 			},
-			object: nil,
+			object: (*IDP)(nil),
 		},
 		{
 			name:    "prepareIDPsQuery no result",
@@ -353,7 +353,7 @@ func Test_IDPPrepares(t *testing.T) {
 					nil,
 				),
 				err: func(err error) (error, bool) {
-					if !errs.IsNotFound(err) {
+					if !zerrors.IsNotFound(err) {
 						return fmt.Errorf("err should be zitadel.NotFoundError got: %w", err), false
 					}
 					return nil, true
@@ -385,7 +385,7 @@ func Test_IDPPrepares(t *testing.T) {
 							"oidc-client-id",
 							nil,
 							"oidc-issuer",
-							database.StringArray{"scope"},
+							database.TextArray[string]{"scope"},
 							domain.OIDCMappingFieldEmail,
 							domain.OIDCMappingFieldPreferredLoginName,
 							"auth.endpoint.ch",
@@ -421,7 +421,7 @@ func Test_IDPPrepares(t *testing.T) {
 							ClientID:              "oidc-client-id",
 							ClientSecret:          &crypto.CryptoValue{},
 							Issuer:                "oidc-issuer",
-							Scopes:                database.StringArray{"scope"},
+							Scopes:                database.TextArray[string]{"scope"},
 							DisplayNameMapping:    domain.OIDCMappingFieldEmail,
 							UsernameMapping:       domain.OIDCMappingFieldPreferredLoginName,
 							AuthorizationEndpoint: "auth.endpoint.ch",
@@ -608,7 +608,7 @@ func Test_IDPPrepares(t *testing.T) {
 							"oidc-client-id",
 							nil,
 							"oidc-issuer",
-							database.StringArray{"scope"},
+							database.TextArray[string]{"scope"},
 							domain.OIDCMappingFieldEmail,
 							domain.OIDCMappingFieldPreferredLoginName,
 							"auth.endpoint.ch",
@@ -684,7 +684,7 @@ func Test_IDPPrepares(t *testing.T) {
 							ClientID:              "oidc-client-id",
 							ClientSecret:          &crypto.CryptoValue{},
 							Issuer:                "oidc-issuer",
-							Scopes:                database.StringArray{"scope"},
+							Scopes:                database.TextArray[string]{"scope"},
 							DisplayNameMapping:    domain.OIDCMappingFieldEmail,
 							UsernameMapping:       domain.OIDCMappingFieldPreferredLoginName,
 							AuthorizationEndpoint: "auth.endpoint.ch",
@@ -728,12 +728,12 @@ func Test_IDPPrepares(t *testing.T) {
 					return nil, true
 				},
 			},
-			object: nil,
+			object: (*IDPs)(nil),
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assertPrepare(t, tt.prepare, tt.object, tt.want.sqlExpectations, tt.want.err)
+			assertPrepare(t, tt.prepare, tt.object, tt.want.sqlExpectations, tt.want.err, defaultPrepareArgs...)
 		})
 	}
 }

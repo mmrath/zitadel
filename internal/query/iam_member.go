@@ -7,9 +7,11 @@ import (
 	sq "github.com/Masterminds/squirrel"
 
 	"github.com/zitadel/zitadel/internal/api/authz"
-
-	"github.com/zitadel/zitadel/internal/errors"
+	"github.com/zitadel/zitadel/internal/api/call"
+	"github.com/zitadel/zitadel/internal/domain"
 	"github.com/zitadel/zitadel/internal/query/projection"
+	"github.com/zitadel/zitadel/internal/telemetry/tracing"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 var (
@@ -42,6 +44,10 @@ var (
 		name:  projection.MemberResourceOwner,
 		table: instanceMemberTable,
 	}
+	InstanceMemberUserResourceOwner = Column{
+		name:  projection.MemberUserResourceOwner,
+		table: instanceMemberTable,
+	}
 	InstanceMemberInstanceID = Column{
 		name:  projection.MemberInstanceID,
 		table: instanceMemberTable,
@@ -61,39 +67,40 @@ func (q *IAMMembersQuery) toQuery(query sq.SelectBuilder) sq.SelectBuilder {
 		toQuery(query)
 }
 
-func (q *Queries) IAMMembers(ctx context.Context, queries *IAMMembersQuery) (*Members, error) {
-	query, scan := prepareInstanceMembersQuery()
-	stmt, args, err := queries.toQuery(query).
-		Where(sq.Eq{
-			InstanceMemberInstanceID.identifier(): authz.GetInstance(ctx).InstanceID(),
-		}).ToSql()
+func (q *Queries) IAMMembers(ctx context.Context, queries *IAMMembersQuery) (members *Members, err error) {
+	ctx, span := tracing.NewSpan(ctx)
+	defer func() { span.EndWithError(err) }()
+
+	query, scan := prepareInstanceMembersQuery(ctx, q.client)
+	eq := sq.Eq{InstanceMemberInstanceID.identifier(): authz.GetInstance(ctx).InstanceID()}
+	stmt, args, err := queries.toQuery(query).Where(eq).ToSql()
 	if err != nil {
-		return nil, errors.ThrowInvalidArgument(err, "QUERY-USNwM", "Errors.Query.InvalidRequest")
+		return nil, zerrors.ThrowInvalidArgument(err, "QUERY-USNwM", "Errors.Query.InvalidRequest")
 	}
 
-	currentSequence, err := q.latestSequence(ctx, instanceMemberTable)
+	currentSequence, err := q.latestState(ctx, instanceMemberTable)
 	if err != nil {
 		return nil, err
 	}
 
-	rows, err := q.client.QueryContext(ctx, stmt, args...)
+	err = q.client.QueryContext(ctx, func(rows *sql.Rows) error {
+		members, err = scan(rows)
+		return err
+	}, stmt, args...)
 	if err != nil {
-		return nil, errors.ThrowInternal(err, "QUERY-Pdg1I", "Errors.Internal")
+		return nil, zerrors.ThrowInternal(err, "QUERY-Pdg1I", "Errors.Internal")
 	}
-	members, err := scan(rows)
-	if err != nil {
-		return nil, err
-	}
-	members.LatestSequence = currentSequence
+	members.State = currentSequence
 	return members, err
 }
 
-func prepareInstanceMembersQuery() (sq.SelectBuilder, func(*sql.Rows) (*Members, error)) {
+func prepareInstanceMembersQuery(ctx context.Context, db prepareDatabase) (sq.SelectBuilder, func(*sql.Rows) (*Members, error)) {
 	return sq.Select(
 			InstanceMemberCreationDate.identifier(),
 			InstanceMemberChangeDate.identifier(),
 			InstanceMemberSequence.identifier(),
 			InstanceMemberResourceOwner.identifier(),
+			InstanceMemberUserResourceOwner.identifier(),
 			InstanceMemberUserID.identifier(),
 			InstanceMemberRoles.identifier(),
 			LoginNameNameCol.identifier(),
@@ -103,11 +110,13 @@ func prepareInstanceMembersQuery() (sq.SelectBuilder, func(*sql.Rows) (*Members,
 			HumanDisplayNameCol.identifier(),
 			MachineNameCol.identifier(),
 			HumanAvatarURLCol.identifier(),
+			UserTypeCol.identifier(),
 			countColumn.identifier(),
 		).From(instanceMemberTable.identifier()).
 			LeftJoin(join(HumanUserIDCol, InstanceMemberUserID)).
 			LeftJoin(join(MachineUserIDCol, InstanceMemberUserID)).
-			LeftJoin(join(LoginNameUserIDCol, InstanceMemberUserID)).
+			LeftJoin(join(UserIDCol, InstanceMemberUserID)).
+			LeftJoin(join(LoginNameUserIDCol, InstanceMemberUserID) + db.Timetravel(call.Took(ctx))).
 			Where(
 				sq.Eq{LoginNameIsPrimaryCol.identifier(): true},
 			).PlaceholderFormat(sq.Dollar),
@@ -126,6 +135,7 @@ func prepareInstanceMembersQuery() (sq.SelectBuilder, func(*sql.Rows) (*Members,
 					displayName        = sql.NullString{}
 					machineName        = sql.NullString{}
 					avatarURL          = sql.NullString{}
+					userType           = sql.NullInt32{}
 				)
 
 				err := rows.Scan(
@@ -133,6 +143,7 @@ func prepareInstanceMembersQuery() (sq.SelectBuilder, func(*sql.Rows) (*Members,
 					&member.ChangeDate,
 					&member.Sequence,
 					&member.ResourceOwner,
+					&member.UserResourceOwner,
 					&member.UserID,
 					&member.Roles,
 					&preferredLoginName,
@@ -142,6 +153,7 @@ func prepareInstanceMembersQuery() (sq.SelectBuilder, func(*sql.Rows) (*Members,
 					&displayName,
 					&machineName,
 					&avatarURL,
+					&userType,
 
 					&count,
 				)
@@ -160,12 +172,13 @@ func prepareInstanceMembersQuery() (sq.SelectBuilder, func(*sql.Rows) (*Members,
 				} else {
 					member.DisplayName = machineName.String
 				}
+				member.UserType = domain.UserType(userType.Int32)
 
 				members = append(members, member)
 			}
 
 			if err := rows.Close(); err != nil {
-				return nil, errors.ThrowInternal(err, "QUERY-EqJFc", "Errors.Query.CloseRows")
+				return nil, zerrors.ThrowInternal(err, "QUERY-EqJFc", "Errors.Query.CloseRows")
 			}
 
 			return &Members{

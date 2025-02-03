@@ -4,35 +4,8 @@ import (
 	"context"
 	"testing"
 
-	caos_errs "github.com/zitadel/zitadel/internal/errors"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
-
-func getTestCtx(userID, orgID string) context.Context {
-	return context.WithValue(context.Background(), dataKey, CtxData{UserID: userID, OrgID: orgID})
-}
-
-type testVerifier struct {
-	memberships []*Membership
-}
-
-func (v *testVerifier) VerifyAccessToken(ctx context.Context, token, clientID, projectID string) (string, string, string, string, string, error) {
-	return "userID", "agentID", "clientID", "de", "orgID", nil
-}
-func (v *testVerifier) SearchMyMemberships(ctx context.Context) ([]*Membership, error) {
-	return v.memberships, nil
-}
-
-func (v *testVerifier) ProjectIDAndOriginsByClientID(ctx context.Context, clientID string) (string, []string, error) {
-	return "", nil, nil
-}
-
-func (v *testVerifier) ExistsOrg(ctx context.Context, orgID string) error {
-	return nil
-}
-
-func (v *testVerifier) VerifierClientID(ctx context.Context, appName string) (string, string, error) {
-	return "clientID", "projectID", nil
-}
 
 func equalStringArray(a, b []string) bool {
 	if len(a) != len(b) {
@@ -46,12 +19,18 @@ func equalStringArray(a, b []string) bool {
 	return true
 }
 
-func Test_GetUserMethodPermissions(t *testing.T) {
+type membershipsResolverFunc func(ctx context.Context, orgID string, shouldTriggerBulk bool) ([]*Membership, error)
+
+func (m membershipsResolverFunc) SearchMyMemberships(ctx context.Context, orgID string, shouldTriggerBulk bool) ([]*Membership, error) {
+	return m(ctx, orgID, shouldTriggerBulk)
+}
+
+func Test_GetUserPermissions(t *testing.T) {
 	type args struct {
-		ctxData      CtxData
-		verifier     *TokenVerifier
-		requiredPerm string
-		authConfig   Config
+		ctxData             CtxData
+		membershipsResolver MembershipsResolver
+		requiredPerm        string
+		authConfig          Config
 	}
 	tests := []struct {
 		name    string
@@ -64,11 +43,9 @@ func Test_GetUserMethodPermissions(t *testing.T) {
 			name: "Empty Context",
 			args: args{
 				ctxData: CtxData{},
-				verifier: Start(&testVerifier{memberships: []*Membership{
-					{
-						Roles: []string{"ORG_OWNER"},
-					},
-				}}, "", nil),
+				membershipsResolver: membershipsResolverFunc(func(ctx context.Context, orgID string, shouldTriggerBulk bool) ([]*Membership, error) {
+					return []*Membership{{Roles: []string{"ORG_OWNER"}}}, nil
+				}),
 				requiredPerm: "project.read",
 				authConfig: Config{
 					RolePermissionMappings: []RoleMapping{
@@ -84,14 +61,16 @@ func Test_GetUserMethodPermissions(t *testing.T) {
 				},
 			},
 			wantErr: true,
-			errFunc: caos_errs.IsUnauthenticated,
+			errFunc: zerrors.IsUnauthenticated,
 			result:  []string{"project.read"},
 		},
 		{
 			name: "No Grants",
 			args: args{
-				ctxData:      CtxData{},
-				verifier:     Start(&testVerifier{memberships: []*Membership{}}, "", nil),
+				ctxData: CtxData{},
+				membershipsResolver: membershipsResolverFunc(func(ctx context.Context, orgID string, shouldTriggerBulk bool) ([]*Membership, error) {
+					return []*Membership{}, nil
+				}),
 				requiredPerm: "project.read",
 				authConfig: Config{
 					RolePermissionMappings: []RoleMapping{
@@ -112,14 +91,16 @@ func Test_GetUserMethodPermissions(t *testing.T) {
 			name: "Get Permissions",
 			args: args{
 				ctxData: CtxData{UserID: "userID", OrgID: "orgID"},
-				verifier: Start(&testVerifier{memberships: []*Membership{
-					{
-						AggregateID: "IAM",
-						ObjectID:    "IAM",
-						MemberType:  MemberTypeIam,
-						Roles:       []string{"IAM_OWNER"},
-					},
-				}}, "", nil),
+				membershipsResolver: membershipsResolverFunc(func(ctx context.Context, orgID string, shouldTriggerBulk bool) ([]*Membership, error) {
+					return []*Membership{
+						{
+							AggregateID: "IAM",
+							ObjectID:    "IAM",
+							MemberType:  MemberTypeIAM,
+							Roles:       []string{"IAM_OWNER"},
+						},
+					}, nil
+				}),
 				requiredPerm: "project.read",
 				authConfig: Config{
 					RolePermissionMappings: []RoleMapping{
@@ -139,7 +120,7 @@ func Test_GetUserMethodPermissions(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, perms, err := getUserMethodPermissions(context.Background(), tt.args.verifier, tt.args.requiredPerm, tt.args.authConfig, tt.args.ctxData)
+			_, perms, err := getUserPermissions(context.Background(), tt.args.membershipsResolver, tt.args.requiredPerm, tt.args.authConfig.RolePermissionMappings, tt.args.ctxData, tt.args.ctxData.OrgID)
 
 			if tt.wantErr && err == nil {
 				t.Errorf("got wrong result, should get err: actual: %v ", err)
@@ -176,7 +157,7 @@ func Test_MapMembershipToPermissions(t *testing.T) {
 					{
 						AggregateID: "1",
 						ObjectID:    "1",
-						MemberType:  MemberTypeOrganisation,
+						MemberType:  MemberTypeOrganization,
 						Roles:       []string{"ORG_OWNER"},
 					},
 				},
@@ -204,7 +185,7 @@ func Test_MapMembershipToPermissions(t *testing.T) {
 					{
 						AggregateID: "1",
 						ObjectID:    "1",
-						MemberType:  MemberTypeOrganisation,
+						MemberType:  MemberTypeOrganization,
 						Roles:       []string{"ORG_OWNER"},
 					},
 				},
@@ -232,13 +213,13 @@ func Test_MapMembershipToPermissions(t *testing.T) {
 					{
 						AggregateID: "1",
 						ObjectID:    "1",
-						MemberType:  MemberTypeOrganisation,
+						MemberType:  MemberTypeOrganization,
 						Roles:       []string{"ORG_OWNER"},
 					},
 					{
 						AggregateID: "IAM",
 						ObjectID:    "IAM",
-						MemberType:  MemberTypeIam,
+						MemberType:  MemberTypeIAM,
 						Roles:       []string{"IAM_OWNER"},
 					},
 				},
@@ -266,7 +247,7 @@ func Test_MapMembershipToPermissions(t *testing.T) {
 					{
 						AggregateID: "2",
 						ObjectID:    "2",
-						MemberType:  MemberTypeOrganisation,
+						MemberType:  MemberTypeOrganization,
 						Roles:       []string{"ORG_OWNER"},
 					},
 					{
@@ -295,7 +276,7 @@ func Test_MapMembershipToPermissions(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			requestPerms, allPerms := mapMembershipsToPermissions(tt.args.requiredPerm, tt.args.membership, tt.args.authConfig)
+			requestPerms, allPerms := mapMembershipsToPermissions(tt.args.requiredPerm, tt.args.membership, tt.args.authConfig.RolePermissionMappings)
 			if !equalStringArray(requestPerms, tt.requestPerms) {
 				t.Errorf("got wrong requestPerms, expecting: %v, actual: %v ", tt.requestPerms, requestPerms)
 			}
@@ -327,7 +308,7 @@ func Test_MapMembershipToPerm(t *testing.T) {
 				membership: &Membership{
 					AggregateID: "Org",
 					ObjectID:    "Org",
-					MemberType:  MemberTypeOrganisation,
+					MemberType:  MemberTypeOrganization,
 					Roles:       []string{"ORG_OWNER"},
 				},
 				authConfig: Config{
@@ -355,7 +336,7 @@ func Test_MapMembershipToPerm(t *testing.T) {
 				membership: &Membership{
 					AggregateID: "Org",
 					ObjectID:    "Org",
-					MemberType:  MemberTypeOrganisation,
+					MemberType:  MemberTypeOrganization,
 					Roles:       []string{"ORG_OWNER"},
 				},
 				authConfig: Config{
@@ -435,7 +416,7 @@ func Test_MapMembershipToPerm(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			requestPerms, allPerms := mapMembershipToPerm(tt.args.requiredPerm, tt.args.membership, tt.args.authConfig, tt.args.requestPerms, tt.args.allPerms)
+			requestPerms, allPerms := mapMembershipToPerm(tt.args.requiredPerm, tt.args.membership, tt.args.authConfig.RolePermissionMappings, tt.args.requestPerms, tt.args.allPerms)
 			if !equalStringArray(requestPerms, tt.requestPerms) {
 				t.Errorf("got wrong requestPerms, expecting: %v, actual: %v ", tt.requestPerms, requestPerms)
 			}
@@ -513,6 +494,112 @@ func Test_ExistisPerm(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := ExistsPerm(tt.args.existingPermissions, tt.args.perm)
+			if result != tt.result {
+				t.Errorf("got wrong result, expecting: %v, actual: %v ", tt.result, result)
+			}
+		})
+	}
+}
+
+func Test_CheckUserResourcePermissions(t *testing.T) {
+	type args struct {
+		perms      []string
+		resourceID string
+	}
+	tests := []struct {
+		name    string
+		args    args
+		wantErr bool
+	}{
+		{
+			name: "no permissions",
+			args: args{
+				perms:      []string{},
+				resourceID: "",
+			},
+			wantErr: true,
+		},
+		{
+			name: "has permission and no context requested",
+			args: args{
+				perms:      []string{"project.read"},
+				resourceID: "",
+			},
+			wantErr: false,
+		},
+		{
+			name: "context requested and has global permission",
+			args: args{
+				perms:      []string{"project.read", "project.read:1"},
+				resourceID: "Test",
+			},
+			wantErr: false,
+		},
+		{
+			name: "context requested and has specific permission",
+			args: args{
+				perms:      []string{"project.read:Test"},
+				resourceID: "Test",
+			},
+			wantErr: false,
+		},
+		{
+			name: "context requested and has no permission",
+			args: args{
+				perms:      []string{"project.read:Test"},
+				resourceID: "Hodor",
+			},
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := checkUserResourcePermissions(tt.args.perms, tt.args.resourceID)
+			if tt.wantErr && err == nil {
+				t.Errorf("got wrong result, should get err: actual: %v ", err)
+			}
+
+			if !tt.wantErr && err != nil {
+				t.Errorf("shouldn't get err: %v ", err)
+			}
+
+			if tt.wantErr && !zerrors.IsPermissionDenied(err) {
+				t.Errorf("got wrong err: %v ", err)
+			}
+		})
+	}
+}
+
+func Test_HasContextResourcePermission(t *testing.T) {
+	type args struct {
+		perms      []string
+		resourceID string
+	}
+	tests := []struct {
+		name   string
+		args   args
+		result bool
+	}{
+		{
+			name: "existing context permission",
+			args: args{
+				perms:      []string{"test:wrong", "test:right"},
+				resourceID: "right",
+			},
+			result: true,
+		},
+		{
+			name: "not existing context permission",
+			args: args{
+				perms:      []string{"test:wrong", "test:wrong2"},
+				resourceID: "test",
+			},
+			result: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := hasContextResourcePermission(tt.args.perms, tt.args.resourceID)
 			if result != tt.result {
 				t.Errorf("got wrong result, expecting: %v, actual: %v ", tt.result, result)
 			}

@@ -4,23 +4,26 @@ import (
 	"fmt"
 
 	"github.com/k3a/html2text"
-
 	"github.com/zitadel/logging"
+
 	"github.com/zitadel/zitadel/internal/notification/channels"
 )
 
-func InitStdoutChannel(config LogConfig) channels.NotificationChannel {
+func InitStdoutChannel(config Config) channels.NotificationChannel {
 
-	logging.Log("NOTIF-D0164").Debug("successfully initialized stdout email and sms channel")
+	logging.WithFields("logID", "NOTIF-D0164").Debug("successfully initialized stdout email and sms channel")
 
 	return channels.HandleMessageFunc(func(message channels.Message) error {
 
-		content := message.GetContent()
+		content, err := message.GetContent()
+		if err != nil {
+			return err
+		}
 		if config.Compact {
 			content = html2text.HTML2Text(content)
 		}
 
-		logging.Log("NOTIF-c73ba").WithFields(map[string]interface{}{
+		logging.WithFields("logID", "NOTIF-c73ba").WithFields(map[string]interface{}{
 			"type":    fmt.Sprintf("%T", message),
 			"content": content,
 		}).Info("handling notification message")

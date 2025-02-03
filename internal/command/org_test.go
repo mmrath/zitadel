@@ -3,21 +3,25 @@ package command
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
+	openid "github.com/zitadel/oidc/v3/pkg/oidc"
+	"go.uber.org/mock/gomock"
 	"golang.org/x/text/language"
 
 	"github.com/zitadel/zitadel/internal/api/authz"
+	http_util "github.com/zitadel/zitadel/internal/api/http"
+	"github.com/zitadel/zitadel/internal/crypto"
 	"github.com/zitadel/zitadel/internal/domain"
-	"github.com/zitadel/zitadel/internal/errors"
 	"github.com/zitadel/zitadel/internal/eventstore"
-	"github.com/zitadel/zitadel/internal/eventstore/repository"
 	"github.com/zitadel/zitadel/internal/eventstore/v1/models"
 	"github.com/zitadel/zitadel/internal/id"
 	id_mock "github.com/zitadel/zitadel/internal/id/mock"
-	"github.com/zitadel/zitadel/internal/repository/member"
 	"github.com/zitadel/zitadel/internal/repository/org"
+	"github.com/zitadel/zitadel/internal/repository/project"
 	"github.com/zitadel/zitadel/internal/repository/user"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 func TestAddOrg(t *testing.T) {
@@ -41,7 +45,7 @@ func TestAddOrg(t *testing.T) {
 				name: "",
 			},
 			want: Want{
-				ValidationErr: errors.ThrowInvalidArgument(nil, "ORG-mruNY", "Errors.Invalid.Argument"),
+				ValidationErr: zerrors.ThrowInvalidArgument(nil, "ORG-mruNY", "Errors.Invalid.Argument"),
 			},
 		},
 		{
@@ -62,7 +66,7 @@ func TestAddOrg(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			AssertValidation(t, context.Background(), AddOrgCommand(authz.WithRequestedDomain(context.Background(), "localhost"), tt.args.a, tt.args.name), nil, tt.want)
+			AssertValidation(t, context.Background(), AddOrgCommand(http_util.WithRequestedHost(context.Background(), "localhost"), tt.args.a, tt.args.name), nil, tt.want)
 		})
 	}
 }
@@ -103,7 +107,7 @@ func TestCommandSide_AddOrg(t *testing.T) {
 				resourceOwner: "org1",
 			},
 			res: res{
-				err: errors.IsErrorInvalidArgument,
+				err: zerrors.IsErrorInvalidArgument,
 			},
 		},
 		{
@@ -120,7 +124,7 @@ func TestCommandSide_AddOrg(t *testing.T) {
 				name:          "  ",
 			},
 			res: res{
-				err: errors.IsErrorInvalidArgument,
+				err: zerrors.IsErrorInvalidArgument,
 			},
 		},
 		{
@@ -138,7 +142,7 @@ func TestCommandSide_AddOrg(t *testing.T) {
 								"lastname1",
 								"nickname1",
 								"displayname1",
-								language.German,
+								language.English,
 								domain.GenderMale,
 								"email1",
 								true,
@@ -164,7 +168,7 @@ func TestCommandSide_AddOrg(t *testing.T) {
 				resourceOwner: "org1",
 			},
 			res: res{
-				err: errors.IsPreconditionFailed,
+				err: zerrors.IsPreconditionFailed,
 			},
 		},
 		{
@@ -182,7 +186,7 @@ func TestCommandSide_AddOrg(t *testing.T) {
 								"lastname1",
 								"nickname1",
 								"displayname1",
-								language.German,
+								language.English,
 								domain.GenderMale,
 								"email1",
 								true,
@@ -190,32 +194,32 @@ func TestCommandSide_AddOrg(t *testing.T) {
 						),
 					),
 					expectFilterOrgMemberNotFound(),
-					expectPushFailed(errors.ThrowAlreadyExists(nil, "id", "internal"),
-						[]*repository.Event{
-							eventFromEventPusher(org.NewOrgAddedEvent(
-								context.Background(),
-								&org.NewAggregate("org2").Aggregate,
-								"Org")),
-							eventFromEventPusher(org.NewDomainAddedEvent(
-								context.Background(),
-								&org.NewAggregate("org2").Aggregate,
-								"org.iam-domain")),
-							eventFromEventPusher(org.NewDomainVerifiedEvent(
-								context.Background(),
-								&org.NewAggregate("org2").Aggregate,
-								"org.iam-domain")),
-							eventFromEventPusher(org.NewDomainPrimarySetEvent(
-								context.Background(),
-								&org.NewAggregate("org2").Aggregate,
-								"org.iam-domain")),
-							eventFromEventPusher(org.NewMemberAddedEvent(
-								context.Background(),
-								&org.NewAggregate("org2").Aggregate,
-								"user1", domain.RoleOrgOwner)),
-						},
-						uniqueConstraintsFromEventConstraint(org.NewAddOrgNameUniqueConstraint("Org")),
-						uniqueConstraintsFromEventConstraint(org.NewAddOrgDomainUniqueConstraint("org.iam-domain")),
-						uniqueConstraintsFromEventConstraint(member.NewAddMemberUniqueConstraint("org2", "user1")),
+					expectPushFailed(zerrors.ThrowAlreadyExists(nil, "id", "internal"),
+						org.NewOrgAddedEvent(
+							context.Background(),
+							&org.NewAggregate("org2").Aggregate,
+							"Org",
+						),
+						org.NewDomainAddedEvent(
+							context.Background(),
+							&org.NewAggregate("org2").Aggregate,
+							"org.iam-domain",
+						),
+						org.NewDomainVerifiedEvent(
+							context.Background(),
+							&org.NewAggregate("org2").Aggregate,
+							"org.iam-domain",
+						),
+						org.NewDomainPrimarySetEvent(
+							context.Background(),
+							&org.NewAggregate("org2").Aggregate,
+							"org.iam-domain",
+						),
+						org.NewMemberAddedEvent(
+							context.Background(),
+							&org.NewAggregate("org2").Aggregate,
+							"user1", domain.RoleOrgOwner,
+						),
 					),
 				),
 				idGenerator: id_mock.NewIDGeneratorExpectIDs(t, "org2"),
@@ -226,13 +230,13 @@ func TestCommandSide_AddOrg(t *testing.T) {
 				},
 			},
 			args: args{
-				ctx:           authz.WithRequestedDomain(context.Background(), "iam-domain"),
+				ctx:           http_util.WithRequestedHost(context.Background(), "iam-domain"),
 				name:          "Org",
 				userID:        "user1",
 				resourceOwner: "org1",
 			},
 			res: res{
-				err: errors.IsErrorAlreadyExists,
+				err: zerrors.IsErrorAlreadyExists,
 			},
 		},
 		{
@@ -250,7 +254,7 @@ func TestCommandSide_AddOrg(t *testing.T) {
 								"lastname1",
 								"nickname1",
 								"displayname1",
-								language.German,
+								language.English,
 								domain.GenderMale,
 								"email1",
 								true,
@@ -258,32 +262,32 @@ func TestCommandSide_AddOrg(t *testing.T) {
 						),
 					),
 					expectFilterOrgMemberNotFound(),
-					expectPushFailed(errors.ThrowInternal(nil, "id", "internal"),
-						[]*repository.Event{
-							eventFromEventPusher(org.NewOrgAddedEvent(
-								context.Background(),
-								&org.NewAggregate("org2").Aggregate,
-								"Org")),
-							eventFromEventPusher(org.NewDomainAddedEvent(
-								context.Background(),
-								&org.NewAggregate("org2").Aggregate,
-								"org.iam-domain")),
-							eventFromEventPusher(org.NewDomainVerifiedEvent(
-								context.Background(),
-								&org.NewAggregate("org2").Aggregate,
-								"org.iam-domain")),
-							eventFromEventPusher(org.NewDomainPrimarySetEvent(
-								context.Background(),
-								&org.NewAggregate("org2").Aggregate,
-								"org.iam-domain")),
-							eventFromEventPusher(org.NewMemberAddedEvent(
-								context.Background(),
-								&org.NewAggregate("org2").Aggregate,
-								"user1", domain.RoleOrgOwner)),
-						},
-						uniqueConstraintsFromEventConstraint(org.NewAddOrgNameUniqueConstraint("Org")),
-						uniqueConstraintsFromEventConstraint(org.NewAddOrgDomainUniqueConstraint("org.iam-domain")),
-						uniqueConstraintsFromEventConstraint(member.NewAddMemberUniqueConstraint("org2", "user1")),
+					expectPushFailed(zerrors.ThrowInternal(nil, "id", "internal"),
+						org.NewOrgAddedEvent(
+							context.Background(),
+							&org.NewAggregate("org2").Aggregate,
+							"Org",
+						),
+						org.NewDomainAddedEvent(
+							context.Background(),
+							&org.NewAggregate("org2").Aggregate,
+							"org.iam-domain",
+						),
+						org.NewDomainVerifiedEvent(
+							context.Background(),
+							&org.NewAggregate("org2").Aggregate,
+							"org.iam-domain",
+						),
+						org.NewDomainPrimarySetEvent(
+							context.Background(),
+							&org.NewAggregate("org2").Aggregate,
+							"org.iam-domain",
+						),
+						org.NewMemberAddedEvent(
+							context.Background(),
+							&org.NewAggregate("org2").Aggregate,
+							"user1", domain.RoleOrgOwner,
+						),
 					),
 				),
 				idGenerator: id_mock.NewIDGeneratorExpectIDs(t, "org2"),
@@ -294,13 +298,13 @@ func TestCommandSide_AddOrg(t *testing.T) {
 				},
 			},
 			args: args{
-				ctx:           authz.WithRequestedDomain(context.Background(), "iam-domain"),
+				ctx:           http_util.WithRequestedHost(context.Background(), "iam-domain"),
 				name:          "Org",
 				userID:        "user1",
 				resourceOwner: "org1",
 			},
 			res: res{
-				err: errors.IsInternal,
+				err: zerrors.IsInternal,
 			},
 		},
 		{
@@ -318,7 +322,7 @@ func TestCommandSide_AddOrg(t *testing.T) {
 								"lastname1",
 								"nickname1",
 								"displayname1",
-								language.German,
+								language.English,
 								domain.GenderMale,
 								"email1",
 								true,
@@ -327,31 +331,26 @@ func TestCommandSide_AddOrg(t *testing.T) {
 					),
 					expectFilterOrgMemberNotFound(),
 					expectPush(
-						[]*repository.Event{
-							eventFromEventPusher(org.NewOrgAddedEvent(context.Background(),
-								&org.NewAggregate("org2").Aggregate,
-								"Org",
-							)),
-							eventFromEventPusher(org.NewDomainAddedEvent(context.Background(),
-								&org.NewAggregate("org2").Aggregate, "org.iam-domain",
-							)),
-							eventFromEventPusher(org.NewDomainVerifiedEvent(context.Background(),
-								&org.NewAggregate("org2").Aggregate,
-								"org.iam-domain",
-							)),
-							eventFromEventPusher(org.NewDomainPrimarySetEvent(context.Background(),
-								&org.NewAggregate("org2").Aggregate,
-								"org.iam-domain",
-							)),
-							eventFromEventPusher(org.NewMemberAddedEvent(context.Background(),
-								&org.NewAggregate("org2").Aggregate,
-								"user1",
-								domain.RoleOrgOwner,
-							)),
-						},
-						uniqueConstraintsFromEventConstraint(org.NewAddOrgNameUniqueConstraint("Org")),
-						uniqueConstraintsFromEventConstraint(org.NewAddOrgDomainUniqueConstraint("org.iam-domain")),
-						uniqueConstraintsFromEventConstraint(member.NewAddMemberUniqueConstraint("org2", "user1")),
+						org.NewOrgAddedEvent(context.Background(),
+							&org.NewAggregate("org2").Aggregate,
+							"Org",
+						),
+						org.NewDomainAddedEvent(context.Background(),
+							&org.NewAggregate("org2").Aggregate, "org.iam-domain",
+						),
+						org.NewDomainVerifiedEvent(context.Background(),
+							&org.NewAggregate("org2").Aggregate,
+							"org.iam-domain",
+						),
+						org.NewDomainPrimarySetEvent(context.Background(),
+							&org.NewAggregate("org2").Aggregate,
+							"org.iam-domain",
+						),
+						org.NewMemberAddedEvent(context.Background(),
+							&org.NewAggregate("org2").Aggregate,
+							"user1",
+							domain.RoleOrgOwner,
+						),
 					),
 				),
 				idGenerator: id_mock.NewIDGeneratorExpectIDs(t, "org2"),
@@ -362,7 +361,7 @@ func TestCommandSide_AddOrg(t *testing.T) {
 				},
 			},
 			args: args{
-				ctx:           authz.WithRequestedDomain(context.Background(), "iam-domain"),
+				ctx:           http_util.WithRequestedHost(context.Background(), "iam-domain"),
 				name:          "Org",
 				userID:        "user1",
 				resourceOwner: "org1",
@@ -394,7 +393,7 @@ func TestCommandSide_AddOrg(t *testing.T) {
 								"lastname1",
 								"nickname1",
 								"displayname1",
-								language.German,
+								language.English,
 								domain.GenderMale,
 								"email1",
 								true,
@@ -403,31 +402,26 @@ func TestCommandSide_AddOrg(t *testing.T) {
 					),
 					expectFilterOrgMemberNotFound(),
 					expectPush(
-						[]*repository.Event{
-							eventFromEventPusher(org.NewOrgAddedEvent(context.Background(),
-								&org.NewAggregate("org2").Aggregate,
-								"Org",
-							)),
-							eventFromEventPusher(org.NewDomainAddedEvent(context.Background(),
-								&org.NewAggregate("org2").Aggregate, "org.iam-domain",
-							)),
-							eventFromEventPusher(org.NewDomainVerifiedEvent(context.Background(),
-								&org.NewAggregate("org2").Aggregate,
-								"org.iam-domain",
-							)),
-							eventFromEventPusher(org.NewDomainPrimarySetEvent(context.Background(),
-								&org.NewAggregate("org2").Aggregate,
-								"org.iam-domain",
-							)),
-							eventFromEventPusher(org.NewMemberAddedEvent(context.Background(),
-								&org.NewAggregate("org2").Aggregate,
-								"user1",
-								domain.RoleOrgOwner,
-							)),
-						},
-						uniqueConstraintsFromEventConstraint(org.NewAddOrgNameUniqueConstraint("Org")),
-						uniqueConstraintsFromEventConstraint(org.NewAddOrgDomainUniqueConstraint("org.iam-domain")),
-						uniqueConstraintsFromEventConstraint(member.NewAddMemberUniqueConstraint("org2", "user1")),
+						org.NewOrgAddedEvent(context.Background(),
+							&org.NewAggregate("org2").Aggregate,
+							"Org",
+						),
+						org.NewDomainAddedEvent(context.Background(),
+							&org.NewAggregate("org2").Aggregate, "org.iam-domain",
+						),
+						org.NewDomainVerifiedEvent(context.Background(),
+							&org.NewAggregate("org2").Aggregate,
+							"org.iam-domain",
+						),
+						org.NewDomainPrimarySetEvent(context.Background(),
+							&org.NewAggregate("org2").Aggregate,
+							"org.iam-domain",
+						),
+						org.NewMemberAddedEvent(context.Background(),
+							&org.NewAggregate("org2").Aggregate,
+							"user1",
+							domain.RoleOrgOwner,
+						),
 					),
 				),
 				idGenerator: id_mock.NewIDGeneratorExpectIDs(t, "org2"),
@@ -438,7 +432,7 @@ func TestCommandSide_AddOrg(t *testing.T) {
 				},
 			},
 			args: args{
-				ctx:           authz.WithRequestedDomain(context.Background(), "iam-domain"),
+				ctx:           http_util.WithRequestedHost(context.Background(), "iam-domain"),
 				name:          " Org ",
 				userID:        "user1",
 				resourceOwner: "org1",
@@ -507,7 +501,7 @@ func TestCommandSide_ChangeOrg(t *testing.T) {
 				orgID: "org1",
 			},
 			res: res{
-				err: errors.IsErrorInvalidArgument,
+				err: zerrors.IsErrorInvalidArgument,
 			},
 		},
 		{
@@ -523,7 +517,7 @@ func TestCommandSide_ChangeOrg(t *testing.T) {
 				name:  "  ",
 			},
 			res: res{
-				err: errors.IsErrorInvalidArgument,
+				err: zerrors.IsErrorInvalidArgument,
 			},
 		},
 		{
@@ -540,7 +534,7 @@ func TestCommandSide_ChangeOrg(t *testing.T) {
 				name:  "org",
 			},
 			res: res{
-				err: errors.IsNotFound,
+				err: zerrors.IsNotFound,
 			},
 		},
 		{
@@ -558,12 +552,12 @@ func TestCommandSide_ChangeOrg(t *testing.T) {
 				),
 			},
 			args: args{
-				ctx:   authz.WithRequestedDomain(context.Background(), "zitadel.ch"),
+				ctx:   http_util.WithRequestedHost(context.Background(), "zitadel.ch"),
 				orgID: "org1",
 				name:  " org ",
 			},
 			res: res{
-				err: errors.IsPreconditionFailed,
+				err: zerrors.IsPreconditionFailed,
 			},
 		},
 		{
@@ -580,23 +574,20 @@ func TestCommandSide_ChangeOrg(t *testing.T) {
 					),
 					expectFilter(),
 					expectPushFailed(
-						errors.ThrowInternal(nil, "id", "message"),
-						[]*repository.Event{
-							eventFromEventPusher(org.NewOrgChangedEvent(context.Background(),
-								&org.NewAggregate("org1").Aggregate, "org", "neworg")),
-						},
-						uniqueConstraintsFromEventConstraint(org.NewRemoveOrgNameUniqueConstraint("org")),
-						uniqueConstraintsFromEventConstraint(org.NewAddOrgNameUniqueConstraint("neworg")),
+						zerrors.ThrowInternal(nil, "id", "message"),
+						org.NewOrgChangedEvent(context.Background(),
+							&org.NewAggregate("org1").Aggregate, "org", "neworg",
+						),
 					),
 				),
 			},
 			args: args{
-				ctx:   authz.WithRequestedDomain(context.Background(), "zitadel.ch"),
+				ctx:   http_util.WithRequestedHost(context.Background(), "zitadel.ch"),
 				orgID: "org1",
 				name:  "neworg",
 			},
 			res: res{
-				err: errors.IsInternal,
+				err: zerrors.IsInternal,
 			},
 		},
 		{
@@ -629,25 +620,23 @@ func TestCommandSide_ChangeOrg(t *testing.T) {
 						),
 					),
 					expectPush(
-						[]*repository.Event{
-							eventFromEventPusher(org.NewOrgChangedEvent(context.Background(),
-								&org.NewAggregate("org1").Aggregate, "org", "neworg")),
-							eventFromEventPusher(org.NewDomainAddedEvent(context.Background(),
-								&org.NewAggregate("org1").Aggregate, "neworg.zitadel.ch")),
-							eventFromEventPusher(org.NewDomainVerifiedEvent(context.Background(),
-								&org.NewAggregate("org1").Aggregate, "neworg.zitadel.ch")),
-							eventFromEventPusher(org.NewDomainRemovedEvent(context.Background(),
-								&org.NewAggregate("org1").Aggregate, "org.zitadel.ch", true)),
-						},
-						uniqueConstraintsFromEventConstraint(org.NewRemoveOrgNameUniqueConstraint("org")),
-						uniqueConstraintsFromEventConstraint(org.NewAddOrgNameUniqueConstraint("neworg")),
-						uniqueConstraintsFromEventConstraint(org.NewAddOrgDomainUniqueConstraint("neworg.zitadel.ch")),
-						uniqueConstraintsFromEventConstraint(org.NewRemoveOrgDomainUniqueConstraint("org.zitadel.ch")),
+						org.NewOrgChangedEvent(context.Background(),
+							&org.NewAggregate("org1").Aggregate, "org", "neworg",
+						),
+						org.NewDomainAddedEvent(context.Background(),
+							&org.NewAggregate("org1").Aggregate, "neworg.zitadel.ch",
+						),
+						org.NewDomainVerifiedEvent(context.Background(),
+							&org.NewAggregate("org1").Aggregate, "neworg.zitadel.ch",
+						),
+						org.NewDomainRemovedEvent(context.Background(),
+							&org.NewAggregate("org1").Aggregate, "org.zitadel.ch", true,
+						),
 					),
 				),
 			},
 			args: args{
-				ctx:   authz.WithRequestedDomain(context.Background(), "zitadel.ch"),
+				ctx:   http_util.WithRequestedHost(context.Background(), "zitadel.ch"),
 				orgID: "org1",
 				name:  "neworg",
 			},
@@ -688,29 +677,76 @@ func TestCommandSide_ChangeOrg(t *testing.T) {
 						),
 					),
 					expectPush(
-						[]*repository.Event{
-							eventFromEventPusher(org.NewOrgChangedEvent(context.Background(),
-								&org.NewAggregate("org1").Aggregate, "org", "neworg")),
-							eventFromEventPusher(org.NewDomainAddedEvent(context.Background(),
-								&org.NewAggregate("org1").Aggregate, "neworg.zitadel.ch")),
-							eventFromEventPusher(org.NewDomainVerifiedEvent(context.Background(),
-								&org.NewAggregate("org1").Aggregate, "neworg.zitadel.ch")),
-							eventFromEventPusher(org.NewDomainPrimarySetEvent(context.Background(),
-								&org.NewAggregate("org1").Aggregate, "neworg.zitadel.ch")),
-							eventFromEventPusher(org.NewDomainRemovedEvent(context.Background(),
-								&org.NewAggregate("org1").Aggregate, "org.zitadel.ch", true)),
-						},
-						uniqueConstraintsFromEventConstraint(org.NewRemoveOrgNameUniqueConstraint("org")),
-						uniqueConstraintsFromEventConstraint(org.NewAddOrgNameUniqueConstraint("neworg")),
-						uniqueConstraintsFromEventConstraint(org.NewAddOrgDomainUniqueConstraint("neworg.zitadel.ch")),
-						uniqueConstraintsFromEventConstraint(org.NewRemoveOrgDomainUniqueConstraint("org.zitadel.ch")),
+						org.NewOrgChangedEvent(context.Background(),
+							&org.NewAggregate("org1").Aggregate, "org", "neworg",
+						),
+						org.NewDomainAddedEvent(context.Background(),
+							&org.NewAggregate("org1").Aggregate, "neworg.zitadel.ch",
+						),
+						org.NewDomainVerifiedEvent(context.Background(),
+							&org.NewAggregate("org1").Aggregate, "neworg.zitadel.ch",
+						),
+						org.NewDomainPrimarySetEvent(context.Background(),
+							&org.NewAggregate("org1").Aggregate, "neworg.zitadel.ch",
+						),
+						org.NewDomainRemovedEvent(context.Background(),
+							&org.NewAggregate("org1").Aggregate, "org.zitadel.ch", true,
+						),
 					),
 				),
 			},
 			args: args{
-				ctx:   authz.WithRequestedDomain(context.Background(), "zitadel.ch"),
+				ctx:   http_util.WithRequestedHost(context.Background(), "zitadel.ch"),
 				orgID: "org1",
 				name:  "neworg",
+			},
+			res: res{},
+		},
+		{
+			name: "change org name case verified, with primary",
+			fields: fields{
+				eventstore: eventstoreExpect(
+					t,
+					expectFilter(
+						eventFromEventPusher(
+							org.NewOrgAddedEvent(context.Background(),
+								&org.NewAggregate("org1").Aggregate,
+								"org"),
+						),
+					),
+					expectFilter(
+						eventFromEventPusher(
+							org.NewOrgAddedEvent(context.Background(),
+								&org.NewAggregate("org1").Aggregate,
+								"org"),
+						),
+						eventFromEventPusher(
+							org.NewDomainAddedEvent(context.Background(),
+								&org.NewAggregate("org1").Aggregate,
+								"org.zitadel.ch"),
+						),
+						eventFromEventPusher(
+							org.NewDomainVerifiedEvent(context.Background(),
+								&org.NewAggregate("org1").Aggregate,
+								"org.zitadel.ch"),
+						),
+						eventFromEventPusher(
+							org.NewDomainPrimarySetEvent(context.Background(),
+								&org.NewAggregate("org1").Aggregate,
+								"org.zitadel.ch"),
+						),
+					),
+					expectPush(
+						org.NewOrgChangedEvent(context.Background(),
+							&org.NewAggregate("org1").Aggregate, "org", "ORG",
+						),
+					),
+				),
+			},
+			args: args{
+				ctx:   http_util.WithRequestedHost(context.Background(), "zitadel.ch"),
+				orgID: "org1",
+				name:  "ORG",
 			},
 			res: res{},
 		},
@@ -764,7 +800,7 @@ func TestCommandSide_DeactivateOrg(t *testing.T) {
 				orgID: "org1",
 			},
 			res: res{
-				err: errors.IsNotFound,
+				err: zerrors.IsNotFound,
 			},
 		},
 		{
@@ -790,7 +826,7 @@ func TestCommandSide_DeactivateOrg(t *testing.T) {
 				orgID: "org1",
 			},
 			res: res{
-				err: errors.IsPreconditionFailed,
+				err: zerrors.IsPreconditionFailed,
 			},
 		},
 		{
@@ -806,11 +842,10 @@ func TestCommandSide_DeactivateOrg(t *testing.T) {
 						),
 					),
 					expectPushFailed(
-						errors.ThrowInternal(nil, "id", "message"),
-						[]*repository.Event{
-							eventFromEventPusher(org.NewOrgDeactivatedEvent(context.Background(),
-								&org.NewAggregate("org1").Aggregate)),
-						},
+						zerrors.ThrowInternal(nil, "id", "message"),
+						org.NewOrgDeactivatedEvent(context.Background(),
+							&org.NewAggregate("org1").Aggregate,
+						),
 					),
 				),
 			},
@@ -819,7 +854,7 @@ func TestCommandSide_DeactivateOrg(t *testing.T) {
 				orgID: "org1",
 			},
 			res: res{
-				err: errors.IsInternal,
+				err: zerrors.IsInternal,
 			},
 		},
 		{
@@ -835,11 +870,9 @@ func TestCommandSide_DeactivateOrg(t *testing.T) {
 						),
 					),
 					expectPush(
-						[]*repository.Event{
-							eventFromEventPusher(org.NewOrgDeactivatedEvent(context.Background(),
-								&org.NewAggregate("org1").Aggregate,
-							)),
-						},
+						org.NewOrgDeactivatedEvent(context.Background(),
+							&org.NewAggregate("org1").Aggregate,
+						),
 					),
 				),
 			},
@@ -866,6 +899,7 @@ func TestCommandSide_DeactivateOrg(t *testing.T) {
 		})
 	}
 }
+
 func TestCommandSide_ReactivateOrg(t *testing.T) {
 	type fields struct {
 		eventstore  *eventstore.Eventstore
@@ -899,7 +933,7 @@ func TestCommandSide_ReactivateOrg(t *testing.T) {
 				orgID: "org1",
 			},
 			res: res{
-				err: errors.IsNotFound,
+				err: zerrors.IsNotFound,
 			},
 		},
 		{
@@ -921,7 +955,7 @@ func TestCommandSide_ReactivateOrg(t *testing.T) {
 				orgID: "org1",
 			},
 			res: res{
-				err: errors.IsPreconditionFailed,
+				err: zerrors.IsPreconditionFailed,
 			},
 		},
 		{
@@ -942,12 +976,10 @@ func TestCommandSide_ReactivateOrg(t *testing.T) {
 						),
 					),
 					expectPushFailed(
-						errors.ThrowInternal(nil, "id", "message"),
-						[]*repository.Event{
-							eventFromEventPusher(org.NewOrgReactivatedEvent(context.Background(),
-								&org.NewAggregate("org1").Aggregate,
-							)),
-						},
+						zerrors.ThrowInternal(nil, "id", "message"),
+						org.NewOrgReactivatedEvent(context.Background(),
+							&org.NewAggregate("org1").Aggregate,
+						),
 					),
 				),
 			},
@@ -956,7 +988,7 @@ func TestCommandSide_ReactivateOrg(t *testing.T) {
 				orgID: "org1",
 			},
 			res: res{
-				err: errors.IsInternal,
+				err: zerrors.IsInternal,
 			},
 		},
 		{
@@ -976,10 +1008,9 @@ func TestCommandSide_ReactivateOrg(t *testing.T) {
 						),
 					),
 					expectPush(
-						[]*repository.Event{
-							eventFromEventPusher(org.NewOrgReactivatedEvent(context.Background(),
-								&org.NewAggregate("org1").Aggregate)),
-						},
+						org.NewOrgReactivatedEvent(context.Background(),
+							&org.NewAggregate("org1").Aggregate,
+						),
 					),
 				),
 			},
@@ -1003,6 +1034,704 @@ func TestCommandSide_ReactivateOrg(t *testing.T) {
 			if tt.res.err != nil && !tt.res.err(err) {
 				t.Errorf("got wrong err: %v ", err)
 			}
+		})
+	}
+}
+
+func TestCommandSide_RemoveOrg(t *testing.T) {
+	type fields struct {
+		eventstore  *eventstore.Eventstore
+		idGenerator id.Generator
+	}
+	type args struct {
+		ctx   context.Context
+		orgID string
+	}
+	type res struct {
+		err func(error) bool
+	}
+	tests := []struct {
+		name   string
+		fields fields
+		args   args
+		res    res
+	}{
+		{
+			name: "default org, error",
+			fields: fields{
+				eventstore: eventstoreExpect(
+					t,
+				),
+			},
+			args: args{
+				ctx:   authz.WithInstance(context.Background(), &mockInstance{}),
+				orgID: "defaultOrgID",
+			},
+			res: res{
+				err: zerrors.IsPreconditionFailed,
+			},
+		},
+		{
+			name: "zitadel org, error",
+			fields: fields{
+				eventstore: eventstoreExpect(
+					t,
+					expectFilter(
+						eventFromEventPusher(
+							project.NewProjectAddedEvent(context.Background(),
+								&project.NewAggregate("projectID", "org1").Aggregate,
+								"ZITADEL",
+								false,
+								false,
+								false,
+								domain.PrivateLabelingSettingUnspecified,
+							),
+						)),
+				),
+			},
+			args: args{
+				ctx:   context.Background(),
+				orgID: "org1",
+			},
+			res: res{
+				err: zerrors.IsPreconditionFailed,
+			},
+		},
+		{
+			name: "org not found, error",
+			fields: fields{
+				eventstore: eventstoreExpect(
+					t,
+					expectFilter(), // zitadel project check
+					expectFilter(),
+				),
+			},
+			args: args{
+				ctx:   context.Background(),
+				orgID: "org1",
+			},
+			res: res{
+				err: zerrors.IsNotFound,
+			},
+		},
+		{
+			name: "push failed, error",
+			fields: fields{
+				eventstore: eventstoreExpect(
+					t,
+					expectFilter(), // zitadel project check
+					expectFilter(
+						eventFromEventPusher(
+							org.NewOrgAddedEvent(context.Background(),
+								&org.NewAggregate("org1").Aggregate,
+								"org"),
+						),
+					),
+					expectFilter(
+						eventFromEventPusher(
+							org.NewDomainPolicyAddedEvent(context.Background(),
+								&org.NewAggregate("org1").Aggregate,
+								true,
+								true,
+								true,
+							),
+						),
+					),
+					expectFilter(),
+					expectFilter(),
+					expectFilter(),
+					expectFilter(),
+					expectPushFailed(
+						zerrors.ThrowInternal(nil, "id", "message"),
+						org.NewOrgRemovedEvent(
+							context.Background(), &org.NewAggregate("org1").Aggregate, "org", []string{}, false, []string{}, []*domain.UserIDPLink{}, []string{},
+						),
+					),
+				),
+			},
+			args: args{
+				ctx:   context.Background(),
+				orgID: "org1",
+			},
+			res: res{
+				err: zerrors.IsInternal,
+			},
+		},
+		{
+			name: "remove org",
+			fields: fields{
+				eventstore: eventstoreExpect(
+					t,
+					expectFilter(), // zitadel project check
+					expectFilter(
+						eventFromEventPusher(
+							org.NewOrgAddedEvent(context.Background(),
+								&org.NewAggregate("org1").Aggregate,
+								"org"),
+						),
+					),
+					expectFilter(
+						eventFromEventPusher(
+							org.NewDomainPolicyAddedEvent(context.Background(),
+								&org.NewAggregate("org1").Aggregate,
+								true,
+								true,
+								true,
+							),
+						),
+					),
+					expectFilter(),
+					expectFilter(),
+					expectFilter(),
+					expectFilter(),
+					expectPush(
+						org.NewOrgRemovedEvent(
+							context.Background(), &org.NewAggregate("org1").Aggregate, "org", []string{}, false, []string{}, []*domain.UserIDPLink{}, []string{},
+						),
+					),
+				),
+			},
+			args: args{
+				ctx:   context.Background(),
+				orgID: "org1",
+			},
+			res: res{},
+		},
+		{
+			name: "remove org with usernames and domains",
+			fields: fields{
+				eventstore: eventstoreExpect(
+					t,
+					expectFilter(), // zitadel project check
+					expectFilter(
+						eventFromEventPusher(
+							org.NewOrgAddedEvent(context.Background(),
+								&org.NewAggregate("org1").Aggregate,
+								"org"),
+						),
+					),
+
+					expectFilter(
+						eventFromEventPusher(
+							org.NewDomainPolicyAddedEvent(context.Background(),
+								&org.NewAggregate("org1").Aggregate,
+								false,
+								true,
+								true,
+							),
+						),
+					),
+					expectFilter(
+						eventFromEventPusher(
+							user.NewHumanAddedEvent(context.Background(),
+								&user.NewAggregate("user1", "org1").Aggregate,
+								"user1",
+								"firstname1",
+								"lastname1",
+								"nickname1",
+								"displayname1",
+								language.English,
+								domain.GenderMale,
+								"email1",
+								false,
+							),
+						), eventFromEventPusher(
+							user.NewMachineAddedEvent(context.Background(),
+								&user.NewAggregate("user2", "org1").Aggregate,
+								"user2",
+								"name",
+								"description",
+								false,
+								domain.OIDCTokenTypeBearer,
+							),
+						),
+					),
+					expectFilter(
+						eventFromEventPusher(
+							org.NewDomainVerifiedEvent(context.Background(), &org.NewAggregate("org1").Aggregate, "domain1"),
+						),
+						eventFromEventPusher(
+							org.NewDomainVerifiedEvent(context.Background(), &org.NewAggregate("org1").Aggregate, "domain2"),
+						),
+					),
+					expectFilter(
+						eventFromEventPusher(
+							user.NewUserIDPLinkAddedEvent(context.Background(), &user.NewAggregate("user1", "org1").Aggregate, "config1", "display1", "id1"),
+						),
+						eventFromEventPusher(
+							user.NewUserIDPLinkAddedEvent(context.Background(), &user.NewAggregate("user2", "org1").Aggregate, "config2", "display2", "id2"),
+						),
+					),
+					expectFilter(
+						eventFromEventPusher(
+							project.NewSAMLConfigAddedEvent(context.Background(), &project.NewAggregate("project1", "org1").Aggregate, "app1", "entity1", []byte{}, ""),
+						),
+						eventFromEventPusher(
+							project.NewSAMLConfigAddedEvent(context.Background(), &project.NewAggregate("project2", "org1").Aggregate, "app2", "entity2", []byte{}, ""),
+						),
+					),
+					expectPush(
+						org.NewOrgRemovedEvent(context.Background(), &org.NewAggregate("org1").Aggregate, "org",
+							[]string{"user1", "user2"},
+							false,
+							[]string{"domain1", "domain2"},
+							[]*domain.UserIDPLink{{IDPConfigID: "config1", ExternalUserID: "id1", DisplayName: "display1"}, {IDPConfigID: "config2", ExternalUserID: "id2", DisplayName: "display2"}},
+							[]string{"entity1", "entity2"},
+						),
+					),
+				),
+			},
+			args: args{
+				ctx:   context.Background(),
+				orgID: "org1",
+			},
+			res: res{},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := &Commands{
+				eventstore:  tt.fields.eventstore,
+				idGenerator: tt.fields.idGenerator,
+			}
+			_, err := r.RemoveOrg(tt.args.ctx, tt.args.orgID)
+			if tt.res.err == nil {
+				assert.NoError(t, err)
+			}
+			if tt.res.err != nil && !tt.res.err(err) {
+				t.Errorf("got wrong err: %v ", err)
+			}
+		})
+	}
+}
+
+func TestCommandSide_SetUpOrg(t *testing.T) {
+	type fields struct {
+		eventstore   func(t *testing.T) *eventstore.Eventstore
+		idGenerator  id.Generator
+		newCode      encrypedCodeFunc
+		keyAlgorithm crypto.EncryptionAlgorithm
+	}
+	type args struct {
+		ctx              context.Context
+		setupOrg         *OrgSetup
+		allowInitialMail bool
+		userIDs          []string
+	}
+	type res struct {
+		createdOrg *CreatedOrg
+		err        error
+	}
+	tests := []struct {
+		name   string
+		fields fields
+		args   args
+		res    res
+	}{
+		{
+			name: "org name empty, error",
+			fields: fields{
+				eventstore:  expectEventstore(),
+				idGenerator: id_mock.NewIDGeneratorExpectIDs(t, "orgID"),
+			},
+			args: args{
+				ctx: http_util.WithRequestedHost(context.Background(), "iam-domain"),
+				setupOrg: &OrgSetup{
+					Name: "",
+				},
+			},
+			res: res{
+				err: zerrors.ThrowInvalidArgument(nil, "ORG-mruNY", "Errors.Invalid.Argument"),
+			},
+		},
+		{
+			name: "userID not existing, error",
+			fields: fields{
+				eventstore: expectEventstore(
+					expectFilter(),
+				),
+				idGenerator: id_mock.NewIDGeneratorExpectIDs(t, "orgID"),
+			},
+			args: args{
+				ctx: http_util.WithRequestedHost(context.Background(), "iam-domain"),
+				setupOrg: &OrgSetup{
+					Name: "Org",
+					Admins: []*OrgSetupAdmin{
+						{
+							ID: "userID",
+						},
+					},
+				},
+			},
+			res: res{
+				err: zerrors.ThrowPreconditionFailed(nil, "ORG-GoXOn", "Errors.User.NotFound"),
+			},
+		},
+		{
+			name: "human invalid, error",
+			fields: fields{
+				eventstore:  expectEventstore(),
+				idGenerator: id_mock.NewIDGeneratorExpectIDs(t, "orgID", "userID"),
+			},
+			args: args{
+				ctx: http_util.WithRequestedHost(context.Background(), "iam-domain"),
+				setupOrg: &OrgSetup{
+					Name: "Org",
+					Admins: []*OrgSetupAdmin{
+						{
+							Human: &AddHuman{
+								Username:  "",
+								FirstName: "firstname",
+								LastName:  "lastname",
+								Email: Email{
+									Address:  "email@test.ch",
+									Verified: true,
+								},
+								PreferredLanguage: language.English,
+							},
+						},
+					},
+				},
+				allowInitialMail: true,
+			},
+			res: res{
+				err: zerrors.ThrowInvalidArgument(nil, "V2-zzad3", "Errors.Invalid.Argument"),
+			},
+		},
+		{
+			name: "human added with initial mail",
+			fields: fields{
+				eventstore: expectEventstore(
+					expectFilter(), // add human exists check
+					expectFilter(
+						eventFromEventPusher(
+							org.NewDomainPolicyAddedEvent(context.Background(),
+								&user.NewAggregate("userID", "orgID").Aggregate,
+								true,
+								true,
+								true,
+							),
+						),
+					),
+					expectFilter(), // org member check
+					expectFilter(
+						eventFromEventPusher(
+							user.NewHumanAddedEvent(context.Background(),
+								&user.NewAggregate("user1", "orgID").Aggregate,
+								"username",
+								"firstname",
+								"lastname",
+								"",
+								"firstname lastname",
+								language.English,
+								domain.GenderUnspecified,
+								"email@test.ch",
+								true,
+							),
+						),
+					),
+					expectPush(
+						eventFromEventPusher(org.NewOrgAddedEvent(context.Background(),
+							&org.NewAggregate("orgID").Aggregate,
+							"Org",
+						)),
+						eventFromEventPusher(org.NewDomainAddedEvent(context.Background(),
+							&org.NewAggregate("orgID").Aggregate, "org.iam-domain",
+						)),
+						eventFromEventPusher(org.NewDomainVerifiedEvent(context.Background(),
+							&org.NewAggregate("orgID").Aggregate,
+							"org.iam-domain",
+						)),
+						eventFromEventPusher(org.NewDomainPrimarySetEvent(context.Background(),
+							&org.NewAggregate("orgID").Aggregate,
+							"org.iam-domain",
+						)),
+						eventFromEventPusher(
+							user.NewHumanAddedEvent(context.Background(),
+								&user.NewAggregate("userID", "orgID").Aggregate,
+								"username",
+								"firstname",
+								"lastname",
+								"",
+								"firstname lastname",
+								language.English,
+								domain.GenderUnspecified,
+								"email@test.ch",
+								true,
+							),
+						),
+						eventFromEventPusher(
+							user.NewHumanEmailVerifiedEvent(context.Background(),
+								&user.NewAggregate("userID", "orgID").Aggregate,
+							),
+						),
+						eventFromEventPusher(
+							user.NewHumanInitialCodeAddedEvent(
+								http_util.WithRequestedHost(context.Background(), "iam-domain"),
+								&user.NewAggregate("userID", "orgID").Aggregate,
+								&crypto.CryptoValue{
+									CryptoType: crypto.TypeEncryption,
+									Algorithm:  "enc",
+									KeyID:      "id",
+									Crypted:    []byte("userinit"),
+								},
+								1*time.Hour,
+								"",
+							),
+						),
+						eventFromEventPusher(org.NewMemberAddedEvent(context.Background(),
+							&org.NewAggregate("orgID").Aggregate,
+							"userID",
+							domain.RoleOrgOwner,
+						)),
+					),
+				),
+				idGenerator: id_mock.NewIDGeneratorExpectIDs(t, "orgID", "userID"),
+				newCode:     mockEncryptedCode("userinit", time.Hour),
+			},
+			args: args{
+				ctx: http_util.WithRequestedHost(context.Background(), "iam-domain"),
+				setupOrg: &OrgSetup{
+					Name: "Org",
+					Admins: []*OrgSetupAdmin{
+						{
+							Human: &AddHuman{
+								Username:  "username",
+								FirstName: "firstname",
+								LastName:  "lastname",
+								Email: Email{
+									Address:  "email@test.ch",
+									Verified: true,
+								},
+								PreferredLanguage: language.English,
+							},
+						},
+					},
+				},
+				allowInitialMail: true,
+			},
+			res: res{
+				createdOrg: &CreatedOrg{
+					ObjectDetails: &domain.ObjectDetails{
+						ResourceOwner: "orgID",
+					},
+					CreatedAdmins: []*CreatedOrgAdmin{
+						{
+							ID: "userID",
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "existing human added",
+			fields: fields{
+				eventstore: expectEventstore(
+					expectFilter(
+						eventFromEventPusher(
+							user.NewHumanAddedEvent(context.Background(),
+								&user.NewAggregate("user1", "orgID").Aggregate,
+								"username",
+								"firstname",
+								"lastname",
+								"",
+								"firstname lastname",
+								language.English,
+								domain.GenderUnspecified,
+								"email@test.ch",
+								true,
+							),
+						),
+					),
+					expectFilter(), // org member check
+					expectPush(
+						eventFromEventPusher(org.NewOrgAddedEvent(context.Background(),
+							&org.NewAggregate("orgID").Aggregate,
+							"Org",
+						)),
+						eventFromEventPusher(org.NewDomainAddedEvent(context.Background(),
+							&org.NewAggregate("orgID").Aggregate, "org.iam-domain",
+						)),
+						eventFromEventPusher(org.NewDomainVerifiedEvent(context.Background(),
+							&org.NewAggregate("orgID").Aggregate,
+							"org.iam-domain",
+						)),
+						eventFromEventPusher(org.NewDomainPrimarySetEvent(context.Background(),
+							&org.NewAggregate("orgID").Aggregate,
+							"org.iam-domain",
+						)),
+						eventFromEventPusher(org.NewMemberAddedEvent(context.Background(),
+							&org.NewAggregate("orgID").Aggregate,
+							"userID",
+							domain.RoleOrgOwner,
+						)),
+					),
+				),
+				idGenerator: id_mock.NewIDGeneratorExpectIDs(t, "orgID"),
+			},
+			args: args{
+				ctx: http_util.WithRequestedHost(context.Background(), "iam-domain"),
+				setupOrg: &OrgSetup{
+					Name: "Org",
+					Admins: []*OrgSetupAdmin{
+						{
+							ID: "userID",
+						},
+					},
+				},
+				allowInitialMail: true,
+			},
+			res: res{
+				createdOrg: &CreatedOrg{
+					ObjectDetails: &domain.ObjectDetails{
+						ResourceOwner: "orgID",
+					},
+					CreatedAdmins: []*CreatedOrgAdmin{},
+				},
+			},
+		},
+		{
+			name: "machine added with pat",
+			fields: fields{
+				eventstore: expectEventstore(
+					expectFilter(), // add machine exists check
+					expectFilter(
+						eventFromEventPusher(
+							org.NewDomainPolicyAddedEvent(context.Background(),
+								&user.NewAggregate("userID", "orgID").Aggregate,
+								true,
+								true,
+								true,
+							),
+						),
+					),
+					expectFilter(),
+					expectFilter(),
+					expectFilter(), // org member check
+					expectFilter(
+						eventFromEventPusher(
+							user.NewHumanAddedEvent(context.Background(),
+								&user.NewAggregate("user1", "orgID").Aggregate,
+								"username",
+								"firstname",
+								"lastname",
+								"",
+								"firstname lastname",
+								language.English,
+								domain.GenderUnspecified,
+								"email@test.ch",
+								true,
+							),
+						),
+					),
+					expectPush(
+						eventFromEventPusher(org.NewOrgAddedEvent(context.Background(),
+							&org.NewAggregate("orgID").Aggregate,
+							"Org",
+						)),
+						eventFromEventPusher(org.NewDomainAddedEvent(context.Background(),
+							&org.NewAggregate("orgID").Aggregate, "org.iam-domain",
+						)),
+						eventFromEventPusher(org.NewDomainVerifiedEvent(context.Background(),
+							&org.NewAggregate("orgID").Aggregate,
+							"org.iam-domain",
+						)),
+						eventFromEventPusher(org.NewDomainPrimarySetEvent(context.Background(),
+							&org.NewAggregate("orgID").Aggregate,
+							"org.iam-domain",
+						)),
+						eventFromEventPusher(
+							user.NewMachineAddedEvent(context.Background(),
+								&user.NewAggregate("userID", "orgID").Aggregate,
+								"username",
+								"name",
+								"description",
+								true,
+								domain.OIDCTokenTypeBearer,
+							),
+						),
+						eventFromEventPusher(
+							user.NewPersonalAccessTokenAddedEvent(context.Background(),
+								&user.NewAggregate("userID", "orgID").Aggregate,
+								"tokenID",
+								testNow.Add(time.Hour),
+								[]string{openid.ScopeOpenID},
+							),
+						),
+						eventFromEventPusher(org.NewMemberAddedEvent(context.Background(),
+							&org.NewAggregate("orgID").Aggregate,
+							"userID",
+							domain.RoleOrgOwner,
+						)),
+					),
+				),
+				idGenerator:  id_mock.NewIDGeneratorExpectIDs(t, "orgID", "userID", "tokenID"),
+				newCode:      mockEncryptedCode("userinit", time.Hour),
+				keyAlgorithm: crypto.CreateMockEncryptionAlg(gomock.NewController(t)),
+			},
+			args: args{
+				ctx: http_util.WithRequestedHost(context.Background(), "iam-domain"),
+				setupOrg: &OrgSetup{
+					Name: "Org",
+					Admins: []*OrgSetupAdmin{
+						{
+							Machine: &AddMachine{
+								Machine: &Machine{
+									Username:        "username",
+									Name:            "name",
+									Description:     "description",
+									AccessTokenType: domain.OIDCTokenTypeBearer,
+								},
+								Pat: &AddPat{
+									ExpirationDate: testNow.Add(time.Hour),
+									Scopes:         []string{openid.ScopeOpenID},
+								},
+							},
+						},
+					},
+				},
+			},
+			res: res{
+				createdOrg: &CreatedOrg{
+					ObjectDetails: &domain.ObjectDetails{
+						ResourceOwner: "orgID",
+					},
+					CreatedAdmins: []*CreatedOrgAdmin{
+						{
+							ID: "userID",
+							PAT: &PersonalAccessToken{
+								ObjectRoot: models.ObjectRoot{
+									AggregateID:   "userID",
+									ResourceOwner: "orgID",
+								},
+								ExpirationDate:  testNow.Add(time.Hour),
+								Scopes:          []string{openid.ScopeOpenID},
+								AllowedUserType: domain.UserTypeMachine,
+								TokenID:         "tokenID",
+								Token:           "dG9rZW5JRDp1c2VySUQ", // token
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := &Commands{
+				eventstore:       tt.fields.eventstore(t),
+				idGenerator:      tt.fields.idGenerator,
+				newEncryptedCode: tt.fields.newCode,
+				keyAlgorithm:     tt.fields.keyAlgorithm,
+				zitadelRoles: []authz.RoleMapping{
+					{
+						Role: domain.RoleOrgOwner,
+					},
+				},
+			}
+			got, err := r.SetUpOrg(tt.args.ctx, tt.args.setupOrg, tt.args.allowInitialMail, tt.args.userIDs...)
+			assert.ErrorIs(t, err, tt.res.err)
+			assert.Equal(t, tt.res.createdOrg, got)
 		})
 	}
 }

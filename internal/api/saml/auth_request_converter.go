@@ -9,7 +9,7 @@ import (
 
 	"github.com/zitadel/zitadel/internal/api/authz"
 	"github.com/zitadel/zitadel/internal/domain"
-	"github.com/zitadel/zitadel/internal/errors"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
 var _ models.AuthRequestInt = &AuthRequest{}
@@ -63,18 +63,10 @@ func (a *AuthRequest) GetUserID() string {
 func (a *AuthRequest) GetUserName() string {
 	return a.UserName
 }
-func (a *AuthRequest) Done() bool {
-	for _, step := range a.PossibleSteps {
-		if step.Type() == domain.NextStepRedirectToCallback {
-			return true
-		}
-	}
-	return false
-}
 
 func AuthRequestFromBusiness(authReq *domain.AuthRequest) (_ models.AuthRequestInt, err error) {
 	if _, ok := authReq.Request.(*domain.AuthRequestSAML); !ok {
-		return nil, errors.ThrowInvalidArgument(nil, "SAML-Hbz7A", "auth request is not of type saml")
+		return nil, zerrors.ThrowInvalidArgument(nil, "SAML-Hbz7A", "auth request is not of type saml")
 	}
 	return &AuthRequest{authReq}, nil
 }
